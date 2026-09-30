@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { geometry, outputName } from '../public/resize.mjs';
 import { safeRelative, saveImage, scanLibrary, createApp } from '../server.mjs';
+import { compareAssets, reconcileLibrary } from '../public/library.mjs';
 
 test('比例计算、Python .5 取整及固定画布的留白与裁切', () => {
   assert.deepEqual([geometry(120, 600, { mode: 'height', height: 300 }).width, geometry(120, 600, { mode: 'height', height: 300 }).height], [60, 300]);
@@ -57,6 +58,12 @@ test('真实目录扫描、输出冲突处理、源文件保护和本地接口�
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const html = await (await fetch(base)).text();
+  assert.match(html, /<html lang="en">/);
+  assert(html.indexOf('/i18n.js') < html.indexOf('/theme.js'));
+  const languageScript = await fetch(`${base}/i18n.js`);
+  assert.equal(languageScript.status, 200);
+  assert.match(languageScript.headers.get('content-type'), /text\/javascript/);
+  assert.match(await languageScript.text(), /resize-studio-language/);
   const token = html.match(/name="resize-token" content="([^"]+)"/)[1];
   assert.equal((await fetch(`${base}/api/config`)).status, 403);
   assert.equal((await fetch(`${base}/api/config`, { headers: { 'X-Resize-Token': token, Origin: 'https://example.com' } })).status, 403);
@@ -107,4 +114,61 @@ test('默认目录使用项目相对路径，自定义目录和配置持久化�
   const absolute = await (await fetch(`${base}/api/config`, { method: 'POST', headers, body: JSON.stringify({ input: path.join(root, 'input'), output: path.join(root, 'absolute-output'), watch: true }) })).json();
   assert.equal(absolute.input, path.join(root, 'input'));
   assert.equal(absolute.output, path.join(root, 'absolute-output'));
+});
+
+test('新增自动选择且优先按加入时间排序，保留取消选择与文件更新状态', () => {
+  const file = (name, modified, size = 10) => ({ name, relativePath: name, modified, size });
+  const items = new Map();
+  const existing = [file('old.png', 5000), file('frame10.png', 500), file('frame2.png', 500)];
+  reconcileLibrary(items, './input', existing);
+  assert([...items.values()].every(item => !item.selected));
+  assert.deepEqual([...items.values()].sort(compareAssets).map(item => item.name), ['old.png', 'frame2.png', 'frame10.png']);
+  const old = [...items.values()].find(item => item.name === 'old.png'); old.selected = true;
+
+  const addedFiles = [...existing, file('new10.png', 1), file('new2.png', 2)];
+  const firstChange = reconcileLibrary(items, './input', addedFiles, { autoSelectNew: true, now: 1000 });
+  assert.equal(firstChange.newCount, 2);
+  assert(firstChange.added.every(item => item.selected));
+  assert.deepEqual([...items.values()].sort(compareAssets).map(item => item.name), ['new2.png', 'new10.png', 'old.png', 'frame2.png', 'frame10.png']);
+  const unchecked = [...items.values()].find(item => item.name === 'new2.png'); unchecked.selected = false;
+  assert.equal(reconcileLibrary(items, './input', addedFiles, { autoSelectNew: true, now: 2000 }).newCount, 0);
+  assert.equal(unchecked.selected, false);
+
+  const replaced = addedFiles.map(item => item.name === 'new2.png' ? file('new2.png', 3, 20) : item);
+  const update = reconcileLibrary(items, './input', replaced, { autoSelectNew: true, now: 2000 });
+  assert.equal(update.newCount, 0);
+  assert.equal(update.added[0].selected, false);
+  assert.equal(update.added[0].addedAt, 1000);
+  assert.equal(old.selected, true);
+  reconcileLibrary(items, './input', [...replaced, file('latest.png', 0)], { autoSelectNew: true, now: 2000 });
+  assert.equal([...items.values()].sort(compareAssets)[0].name, 'latest.png');
+
+  items.set('drop', { id: 'drop', name: 'drag.png', relativePath: 'folder/drag.png', source: 'drop', modified: 0, addedAt: 3000, selected: true });
+  const switched = reconcileLibrary(items, './other', [file('other.png', 0)]);
+  assert.equal(switched.newCount, 0);
+  assert.equal(switched.added[0].selected, false);
+  assert.equal([...items.values()].filter(item => item.source === 'local').length, 1);
+  assert.equal(items.get('drop').selected, true);
+});
+
+test('真实 input 扫描识别保留旧时间的新文件，并正确处理删除与重名排序', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'resize-watch-test-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'a')); await fs.mkdir(path.join(root, 'b'));
+  await fs.writeFile(path.join(root, 'existing.png'), 'existing');
+  const items = new Map();
+  reconcileLibrary(items, root, (await scanLibrary(root)).files);
+  await fs.writeFile(path.join(root, 'b', 'new.png'), 'new-b');
+  await fs.writeFile(path.join(root, 'a', 'new.png'), 'new-a');
+  await fs.utimes(path.join(root, 'b', 'new.png'), 1, 1);
+  await fs.utimes(path.join(root, 'a', 'new.png'), 1, 1);
+  const change = reconcileLibrary(items, root, (await scanLibrary(root)).files, { autoSelectNew: true, now: Date.now() });
+  assert.equal(change.newCount, 2);
+  assert(change.added.every(item => item.selected));
+  assert.deepEqual([...items.values()].sort(compareAssets).map(item => item.relativePath), ['a/new.png', 'b/new.png', 'existing.png']);
+  await fs.unlink(path.join(root, 'a', 'new.png'));
+  const deleted = reconcileLibrary(items, root, (await scanLibrary(root)).files, { autoSelectNew: true });
+  assert.equal(deleted.removed.length, 1);
+  assert.equal(deleted.newCount, 0);
+  assert.equal([...items.values()].filter(item => item.selected).length, 1);
 });

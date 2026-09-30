@@ -1,62 +1,115 @@
-# 图片缩放工作台
+# Resize Studio
 
-双击 **start.cmd** 启动。服务在后台运行，并自动用默认浏览器打开 `http://127.0.0.1:4178`。重复启动会打开已有页面。双击 **停止工具.cmd** 停止后台服务。
+A local image workbench for fast, repeatable batch resizing. Drop your assets, choose a resize mode, preview the result, and export directly to your folder.
 
-需要 Node.js 20 或更新版本。本机已具备 Node.js；没有第三方依赖，不用安装 Python，不用 `npm install`。也可运行 `npm start`（关闭终端停止服务）。**不要直接双击 index.html**，目录读写依赖本地服务。
+[简体中文](README.zh-CN.md)
 
-## 日常操作
+## Quick start
 
-1. 拖入多张图片或文件夹；也可使用「选择图片」「导入文件夹」。导入素材自动勾选，重复导入同一批文件不会重复添加。
-2. 素材目录默认为本项目的 `./input`。使用「浏览」或输入路径后点「加载」切换目录，支持相对路径和绝对路径。在缩略图左上角选择需要处理的图片，点击图片预览。目录素材默认不勾选。
-3. 点击缩放方式，填写尺寸或百分比；常用数值有快捷按钮。搜索后「全选可见」只选当前搜索结果，「取消选择」取消全部选择。
-4. 填写目标文件夹，点击「批量处理并导出」，然后「打开输出文件夹」。支持中文文件名、中文目录和多级子目录。
+On Windows, double-click **start.cmd**. The service runs in the background and opens `http://127.0.0.1:4178` in your default browser. Starting it again opens the existing session. Double-click **停止工具.cmd** to stop the service.
 
-## 缩放按钮
+Requires **Node.js 20 or later**. There are no third-party dependencies, build steps, or Python requirements. You do not need to run `npm install`.
 
-| 功能 | 行为 |
+```sh
+npm start
+```
+
+This runs the server in the foreground; closing the terminal stops it. Open the local URL instead of opening `public/index.html` directly: folder access requires the local service.
+
+## Highlights
+
+- **Batch input:** drop multiple images or entire folders, or use the file and folder pickers.
+- **Five resize modes:** proportional height, proportional width, exact dimensions, percentage, and bounded fit.
+- **Before-and-after previews:** compare output dimensions, transparency, and encoded quality.
+- **Folder watching:** discover new images every three seconds, select them automatically, and show them first.
+- **Direct export:** write to your chosen destination with optional subfolders, filename suffixes, and collision handling.
+- **English / 中文:** switch from the header. English is the default; your choice is remembered in this browser.
+- **Light / dark mode:** a blue accent with neutral work surfaces; the theme is remembered independently of language.
+- **Local processing:** Canvas handles the images in your browser; Node.js handles local filesystem access. No cloud uploads.
+
+## Everyday workflow
+
+1. Drop images or a folder, or load an asset folder. The default is `./input`. Use **Browse** or enter a relative or absolute path and click **Load** to change it.
+2. Select the assets to process. Dropped images are selected automatically. Existing folder images are initially unselected; new arrivals detected while the page is running are selected automatically. Click a thumbnail to preview it.
+3. Choose a mode and set its dimensions or percentage. Search filters the list; **Select visible** selects the filtered assets, while **Deselect all** clears all selections.
+4. Choose a destination and click **Resize & export**. Use **Open output folder** to view the results. Stopping a batch leaves completed files in place.
+
+Switching language preserves your selections, filenames, folder paths, and resize settings. Buttons, descriptions, status messages, previews, and activity entries follow the selected language.
+
+## Resize modes
+
+| Mode | Result |
 | --- | --- |
-| 按高度 | 固定高度，宽度等比计算；如 120×600 → 高度 300，得到 60×300 |
-| 按宽度 | 固定宽度，高度等比计算 |
-| 指定尺寸：拉伸 | 强制指定宽高，适合明确需要 108×108 等尺寸的情况 |
-| 指定尺寸：留白 | 等比缩放，居中放入固定画布；PNG/WebP 留白透明 |
-| 指定尺寸：裁切 | 等比缩放铺满固定画布，居中裁掉多余部分 |
-| 按百分比 | 50% 为半尺寸，80% 为原尺寸的 0.8 倍 |
-| 限定范围 | 等比放进最大宽高范围，输出实际尺寸，不补画布 |
+| By height | Fixed height, proportional width. Example: 120 × 600 at height 300 becomes 60 × 300. |
+| By width | Fixed width, proportional height. |
+| Exact dimensions · Stretch | Force the requested width and height; proportions may change. |
+| Exact dimensions · Pad | Fit the complete image into a centered, fixed-size canvas; PNG/WebP padding is transparent. |
+| Exact dimensions · Crop | Fill the canvas proportionally and crop the excess from the center. |
+| By percentage | 50% halves both dimensions; 80% scales them to 0.8×. |
+| Fit within bounds | Fit proportionally within maximum dimensions and export the actual size without padding. |
 
-默认不允许放大；需要放大时勾选「允许放大」。像素风勾选「最近邻」。普通图片使用浏览器高质量平滑缩放；算法与原工具的 Pillow LANCZOS 不同，建议通过前后预览判断实际效果。比例尺寸在 .5 处采用 Python 的取整规则，保持旧工具的尺寸结果。
+Upscaling is disabled by default; enable **Allow upscaling** when needed. Use **Pixel art / nearest neighbor** for crisp pixel assets. Other images use the browser's high-quality smoothing. This differs from Pillow LANCZOS; compare the preview when visual fidelity matters. Proportional dimension rounding matches Python's rounding at `.5` for compatibility with the original tool.
 
-## 输入目录监听
+## Folder watching and ordering
 
-勾选「监听目录变化」后，页面打开期间每 3 秒扫描一次，递归加载新增/更新图片、移除已经删除的图片，保留未改变素材的勾选状态。导出时暂停刷新，避免同一批素材被中途替换。此功能更新素材列表，**不自动导出**。浏览器后台可能降低定时器频率，回到页面后可点「立即刷新」。关闭页面后不继续扫描。
+**Watch folder for changes** scans recursively every three seconds while the page is open. It adds or updates images, removes deleted files, and preserves existing selections. Watching pauses during export and does **not** automatically process or export images. Background tabs may be throttled; use **Refresh now** when needed. Closing the page stops scanning.
 
-拖入文件夹是一次性导入；若要持续同步，请在「素材目录」中选择这个目录。资源选择用缩略图窗口和搜索完成，无需把所有素材都处理一遍。`.meta` 和其他非图片文件会被忽略。
+New arrivals and imports appear first, ordered by detection/import time descending. Files in the same batch are ordered by name, with numeric sorting. Existing files are ordered by modification time descending, then name. Old files copied into the folder still count as new arrivals. Deselecting an asset persists across refreshes; replacing a file preserves its selection and arrival time. Changing the input folder starts a fresh scan with existing files unselected.
 
-## 输出目录与原图
+Dropping a folder imports a snapshot. To keep it synchronized, load it as the asset folder. Non-image files, including `.meta` files, are ignored.
 
-- 默认输入为 `./input`，默认输出为 `./output`，都以 `resizeImageHtml` 项目目录为基准解析，不依赖启动时的工作目录。移动整个项目后仍可使用。
-- **保留原 Python 工具及其 input/output，不移动、不清空。** 当前工具默认使用自己的 input/output。
-- 指定目标目录后直接优先写入该目录，支持相对路径或绝对路径；留空恢复 `./output`。目录不存在时自动创建。页面修改素材目录的功能继续保留。
-- 输入目录、输出目录和监听开关保存在 `settings.json`；尺寸等选项保存在当前浏览器的 localStorage。
-- 默认保留子目录结构。手动导入/拖入文件夹时保留顶层文件夹名；监听目录的素材以所选目录为根保留内部结构。取消勾选后全部平铺输出。
-- 同名处理默认自动加 `_1`、`_2`，也可跳过或明确选择覆盖。覆盖仅作用于目标文件；已导入的目录原图受保护。**请把导出目录放在素材目录外**。拖入文件无法获取绝对源路径，避免把导出目录选到原图所在目录，尤其在选择覆盖时。
-- 支持导入 PNG/JPG/WebP/BMP。导出 PNG/WebP/JPG，转换后使用正确扩展名。PNG/WebP 保留透明，JPG 用白色背景。WebP/JPG 支持质量设置。
-- 暂不迁移原 Python 工具的 Excel 尺寸映射和 256 色调色板功能；GIF 动画和 TIFF 不在本版支持范围。
-- 「指定大小」指像素宽高，不是指定 KB/MB；若需要文件体积目标，可作为后续功能扩展。
+## Inputs, exports, and originals
 
-浏览器 Canvas 负责图像处理，Node.js 仅负责本机目录读写。本地服务只监听 `127.0.0.1`，拒绝跨站请求；图片不上传到互联网。单张导出数据上限 80 MB，输出单边上限 16384 px，总像素上限约 3200 万，批次逐张处理。停止任务后，已保存的文件保留。
+- Default input: `./input`. Default output: `./output`. Relative paths resolve against this project's folder, regardless of the launch directory, so the project can be moved as a whole.
+- Your explicit destination takes priority. An empty destination restores `./output`; missing folders are created automatically. Existing output folders are never cleared.
+- The original Python tool at `D:\project\cmzn\tools\resizeImage` and its input/output remain separate and preserved.
+- Input/output paths and watching preferences are stored in `settings.json`. Resize settings, theme, and language are stored in browser localStorage.
+- Subfolder structure is preserved by default. Dropped/imported folders include their top-level folder name; watched assets use the selected folder as their root. Disable the option for flat output.
+- Existing files receive `_1`, `_2`, etc. by default. You may choose **Skip** or explicitly choose **Overwrite destination**.
+- Keep the destination outside the source folder. The server rejects writes into the loaded input folder. Browsers do not expose absolute source paths for dropped files, so choose a separate destination for those files, especially when overwriting.
+- Import PNG, JPG, WebP, and BMP. Export PNG, WebP, or JPG with matching extensions. PNG/WebP preserve transparency; JPG uses a white background. WebP/JPG offer encoding-quality controls.
 
-## 后续让 AI 增加功能
+The service listens only on `127.0.0.1`, checks Host/Origin and request tokens, and validates paths and symbolic links. Batches process one image at a time. Limits: 80 MB per exported file, 16384 px per side, and approximately 32 million output pixels.
 
-在本目录开启 AI 对话，例如：
+“Size” refers to pixel dimensions, not a target KB/MB file size. Animated GIF, TIFF, Excel size mappings, and indexed 256-color PNG output are not currently supported.
 
-> 请阅读 AGENTS.md 和 AI_GUIDE.md，为图片工作台增加「按目标 KB 压缩」按钮，先展示预览再导出，继续保留当前 output 和原图。
+## Development and AI-assisted changes
 
-项目结构和扩展步骤见 [AI_GUIDE.md](AI_GUIDE.md)，自动读取的维护约定见 [AGENTS.md](AGENTS.md)。
+The project uses native HTML, CSS, ES modules, and Node.js built-in modules.
 
-## 验证与排错
+| File | Responsibility |
+| --- | --- |
+| `public/index.html` | Workspace, controls, and preview dialog; English fallback text. |
+| `public/styles.css` | Shared layout and light/dark theme tokens. |
+| `public/i18n.js` | English/Chinese catalog, language persistence, static labels, and error presentation. |
+| `public/theme.js` | Theme restoration before the stylesheet and the header toggle. |
+| `public/app.js` | Imports, selections, watching, previews, exports, and translated activity. |
+| `public/library.mjs` | Asset reconciliation and ordering. |
+| `public/resize.mjs` | Geometry, Canvas rendering, encoding, and output naming. |
+| `server.mjs` | Local filesystem APIs and static serving. |
+| `tests/core.test.mjs` | Resize, filesystem, and HTTP checks. |
+| `tests/localization.test.mjs` | Language persistence, translation coverage, theme labels, and application state checks using a DOM stub. |
 
-运行 `npm test` 检查尺寸计算、路径约束、目录扫描、同名处理和接口访问限制。启动脚本日志位于 `.runtime/server.log` / `.runtime/server.error.log`。
+For a future feature, start an AI conversation in this folder with a request such as:
 
-端口占用时使用 `powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -Port 4179`。网络盘需确保当前 Windows 用户可访问；报错会显示在处理记录中。
+> Read AGENTS.md and AI_GUIDE.md, then add a target-KB compression mode with preview and batch export. Keep existing output files and originals, and provide English and Chinese labels.
 
-技术参考：[Canvas drawImage](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/drawImage)、[Canvas 平滑质量](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/imageSmoothingQuality)、[Node.js 文件系统](https://nodejs.org/api/fs.html)。
+See [AI_GUIDE.md](AI_GUIDE.md) for extension steps and [AGENTS.md](AGENTS.md) for maintenance conventions. Add new user-facing text to `public/i18n.js`, then update both README versions when behavior changes.
+
+## Verification and troubleshooting
+
+```sh
+npm test
+```
+
+Tests cover geometry, path constraints, folder scans, collision policies, source protection, local API access, and language behavior. Filesystem tests use temporary directories.
+
+Startup logs are in `.runtime/server.log` and `.runtime/server.error.log`. If port 4178 is occupied, choose another port:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -Port 4179
+```
+
+For network folders, ensure your Windows account can access them. Per-file failures appear in **Activity** and do not stop subsequent files in the batch.
+
+Technical references: [Canvas drawImage](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/drawImage), [Canvas smoothing quality](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/imageSmoothingQuality), [Node.js filesystem](https://nodejs.org/api/fs.html).

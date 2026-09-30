@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "本地批量图片缩放工作台",
-  "scripts": { "start": "node server.mjs", "test": "node --test tests/core.test.mjs" },
+  "description": "A local image workbench for batch resizing",
+  "scripts": { "start": "node server.mjs", "test": "node --test tests/core.test.mjs tests/localization.test.mjs" },
   "engines": { "node": ">=20" }
 }

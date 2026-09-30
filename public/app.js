@@ -1,20 +1,27 @@
 import { MODES, geometry, outputName, renderImage } from './resize.mjs';
+import { compareAssets, reconcileLibrary } from './library.mjs';
 
+const { t, errorText, getLanguage } = window.ResizeI18n;
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="resize-token"]').content;
 const supported = /\.(png|jpe?g|webp|bmp)$/i;
-const state = { mode: 'height', items: new Map(), config: null, busy: false, scanning: false, importing: false, cancelled: false, thumbnailQueue: [], thumbnailWorkers: 0 };
-let toastTimer;
+const state = { mode: 'height', items: new Map(), config: null, libraryRoot: null, busy: false, scanning: false, importing: false, cancelled: false, thumbnailQueue: [], thumbnailWorkers: 0 };
+let toastTimer, lastToast, lastProgress;
 const bytes = value => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
 const element = (tag, className, value) => { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; };
 
-function log(message, kind = 'neutral') {
-  const row = element('li', kind, `${new Date().toLocaleTimeString('zh-CN', { hour12: false })}  ${message}`);
+function messageText({ key, params }) { return t(key, { ...params, ...(params.error !== undefined ? { error: errorText(params.error) } : {}) }); }
+function renderLog(row) {
+  row.textContent = row.message.at.toLocaleTimeString(getLanguage() === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) + '  ' + messageText(row.message);
+}
+function log(key, kind = 'neutral', params = {}) {
+  const row = element('li', kind); row.message = { key, params, at: new Date() }; renderLog(row);
   $('log').prepend(row);
   while ($('log').children.length > 300) $('log').lastElementChild.remove();
 }
-function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500); }
-function errorReport(error) { log(error.message, 'error'); toast(error.message); }
+function toast(key, params = {}) { lastToast = { key, params }; $('toast').textContent = messageText(lastToast); $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4500); }
+function errorReport(error) { log('log.error', 'error', { error: error.message }); toast('log.error', { error: error.message }); }
+function progressMessage(key, params = {}) { lastProgress = { key, params }; $('progress-label').textContent = messageText(lastProgress); }
 function on(id, event, action) { $(id).addEventListener(event, e => { Promise.resolve().then(() => action(e)).catch(errorReport); }); }
 async function api(route, { method = 'GET', body, raw = false } = {}) {
   const response = await fetch(`/api/${route}`, { method, headers: { 'X-Resize-Token': token, ...(body && !raw ? { 'Content-Type': 'application/json' } : {}) }, body: body === undefined ? undefined : raw ? body : JSON.stringify(body) });
@@ -28,13 +35,13 @@ function options() {
 function selectedItems() { return [...state.items.values()].filter(item => item.selected); }
 function visibleItems() {
   const query = $('search').value.trim().toLocaleLowerCase();
-  return [...state.items.values()].filter(item => item.relativePath.toLocaleLowerCase().includes(query));
+  return [...state.items.values()].filter(item => item.relativePath.toLocaleLowerCase().includes(query)).sort(compareAssets);
 }
 function updateCounts() {
   const count = selectedItems().length;
-  $('library-count').textContent = `${state.items.size} 张素材`;
-  $('selection-count').textContent = `已选择 ${count} 张 / 当前显示 ${visibleItems().length} 张`;
-  $('export-count').textContent = `准备导出 ${count} 张`;
+  $('library-count').textContent = t('assets.count', { count: state.items.size });
+  $('selection-count').textContent = t('assets.selection', { count, visible: visibleItems().length });
+  $('export-count').textContent = t('assets.exportCount', { count });
   $('export').disabled = state.busy || state.importing || count === 0 || !state.config;
   $('empty').hidden = visibleItems().length > 0;
 }
@@ -44,11 +51,11 @@ function updateCard(item, card) {
   card.querySelector('input').checked = item.selected;
   const target = card.querySelector('.card-target');
   target.classList.remove('error');
-  if (item.error) { target.textContent = item.error; target.classList.add('error'); }
+  if (item.error) { target.textContent = errorText(item.error); target.classList.add('error'); }
   else if (item.width) {
     try { const size = geometry(item.width, item.height, options()); target.textContent = `→ ${size.width} × ${size.height} px`; }
-    catch (error) { target.textContent = error.message; target.classList.add('error'); }
-  } else target.textContent = '读取尺寸中…';
+    catch (error) { target.textContent = errorText(error); target.classList.add('error'); }
+  } else target.textContent = t('assets.reading');
   card.querySelector('.card-size').textContent = item.width ? `${item.width} × ${item.height} · ${bytes(item.size)}` : bytes(item.size);
   const thumb = card.querySelector('.thumb-button');
   if (item.thumbnail && !thumb.querySelector('img')) { const image = element('img'); image.src = item.thumbnail; image.alt = item.name; thumb.replaceChildren(image); }
@@ -57,9 +64,9 @@ function renderLibrary() {
   const fragment = document.createDocumentFragment();
   for (const item of visibleItems()) {
     const card = element('article', 'image-card'); card.dataset.id = item.id; card.title = item.relativePath;
-    const check = element('label', 'card-check'); const input = element('input'); input.type = 'checkbox'; input.setAttribute('aria-label', `选择 ${item.relativePath}`); check.append(input);
-    const thumb = element('button', 'thumb-button'); thumb.type = 'button'; thumb.setAttribute('aria-label', `预览 ${item.relativePath}`); thumb.append(element('span', '', '▧'));
-    const body = element('div', 'card-body'); body.append(element('div', 'card-name', item.name), element('div', 'card-size'), element('div', 'card-target'), element('div', 'card-source', item.source === 'local' ? '素材目录' : '拖入 / 手动导入'));
+    const check = element('label', 'card-check'); const input = element('input'); input.type = 'checkbox'; input.setAttribute('aria-label', t('assets.select', { name: item.relativePath })); check.append(input);
+    const thumb = element('button', 'thumb-button'); thumb.type = 'button'; thumb.setAttribute('aria-label', t('assets.preview', { name: item.relativePath })); thumb.append(element('span', '', '▧'));
+    const body = element('div', 'card-body'); body.append(element('div', 'card-name', item.name), element('div', 'card-size'), element('div', 'card-target'), element('div', 'card-source', t(item.source === 'local' ? 'assets.local' : 'assets.imported')));
     card.append(check, thumb, body); updateCard(item, card); fragment.append(card);
   }
   $('library').replaceChildren(fragment); updateCounts();
@@ -73,13 +80,7 @@ function setMode(mode) {
   $('height-field').hidden = !['height', 'exact', 'fit'].includes(mode);
   $('width-field').hidden = !['width', 'exact', 'fit'].includes(mode);
   $('percent-field').hidden = mode !== 'percent'; $('fit-field').hidden = mode !== 'exact';
-  $('mode-help').textContent = {
-    height: '指定高度，宽度按原图比例计算；尺寸取整与原 Python 工具一致。',
-    width: '指定宽度，高度按原图比例计算。',
-    exact: '拉伸可能改变比例；留白保留完整内容；裁切填满画布。',
-    percent: '50% 即原尺寸的一半；80% 即原尺寸的 0.8 倍。',
-    fit: '在限定的宽高内等比缩放，输出实际尺寸，不补留白。'
-  }[mode];
+  $('mode-help').textContent = t(`mode.${mode}.help`);
   const presets = mode === 'percent' ? [25, 50, 80, 100] : mode === 'height' || mode === 'width' ? [50, 108, 120, 256] : [64, 108, 128, 256];
   $('presets').replaceChildren(...presets.map(size => {
     const button = element('button', 'preset', mode === 'percent' ? `${size}%` : mode === 'exact' || mode === 'fit' ? `${size}²` : `${size}px`);
@@ -101,9 +102,9 @@ function remember() {
 }
 function formatChanged() { $('quality-field').hidden = $('format').value === 'png'; remember(); }
 function setBusy(busy) {
-  state.busy = busy;
+  state.busy = busy; $('language-select').disabled = busy;
   for (const node of document.querySelectorAll('main button, main input, main select, .image-card input')) node.disabled = busy;
-  $('cancel').hidden = !busy; $('cancel').disabled = false; $('cancel').textContent = '停止剩余任务'; $('progress').hidden = !busy; updateCounts();
+  $('cancel').hidden = !busy; $('cancel').disabled = false; $('cancel').textContent = t('export.cancel'); $('progress').hidden = !busy; updateCounts();
 }
 
 async function loadSource(item) {
@@ -123,7 +124,7 @@ function runThumbnailQueue() {
     state.thumbnailWorkers++;
     makeThumbnail(item).catch(error => {
       if (state.items.get(item.id) !== item) return;
-      item.error = error.message; log(`${item.relativePath}：${error.message}`, 'error'); repaintItem(item);
+      item.error = error.message; log('log.fileError', 'error', { name: item.relativePath, error: error.message }); repaintItem(item);
     }).finally(() => { state.thumbnailWorkers--; runThumbnailQueue(); });
   }
 }
@@ -149,58 +150,53 @@ async function refreshLibrary(manual = false) {
   try {
     const snapshot = await api('library');
     if (state.busy || state.importing) return;
-    const keep = new Set(); let added = 0, removed = 0;
-    for (const file of snapshot.files) {
-      const id = `local:${state.config.input}:${file.relativePath}:${file.size}:${file.modified}`;
-      keep.add(id);
-      if (state.items.has(id)) continue;
-      // Preserve an existing selection when a file is replaced in the watched folder.
-      const previous = [...state.items.values()].find(item => item.source === 'local' && item.root === state.config.input && item.relativePath === file.relativePath);
-      const item = { ...file, id, source: 'local', root: state.config.input, selected: previous?.selected ?? false };
-      state.items.set(id, item); queueThumbnail(item); added++;
-    }
-    for (const item of [...state.items.values()]) if (item.source === 'local' && !keep.has(item.id)) { removeItem(item); removed++; }
-    if (added || removed || manual) renderLibrary();
-    if (manual) log(`素材目录已刷新：${snapshot.files.length} 张图片。目录素材默认不勾选，请选择所需素材。`);
-    else if (added || removed) log(`目录变化：新增或更新 ${added} 张，移除 ${removed} 张。`);
-    for (const warning of snapshot.warnings) log(`目录读取提示：${warning}`, 'error');
-    $('watch-label').textContent = state.config.watch ? '自动刷新中' : '手动刷新';
+    const changes = reconcileLibrary(state.items, state.config.input, snapshot.files, { autoSelectNew: state.libraryRoot === state.config.input });
+    state.libraryRoot = state.config.input;
+    for (const item of changes.removed) removeItem(item);
+    for (const item of changes.added) queueThumbnail(item);
+    if (changes.added.length || changes.removed.length || manual) renderLibrary();
+    if (manual) log('log.refreshed', 'neutral', { count: snapshot.files.length });
+    else if (changes.added.length || changes.removed.length) log('log.changes', 'neutral', { added: changes.added.length, removed: changes.removed.length });
+    if (changes.newCount) { log('log.new', 'success', { count: changes.newCount }); toast('toast.new', { count: changes.newCount }); }
+    for (const warning of snapshot.warnings) log('log.warning', 'error', { error: warning });
+    $('watch-label').textContent = t(state.config.watch ? 'watch.active' : 'watch.manual');
   } finally { state.scanning = false; }
 }
 async function saveConfig(input = state.config.input) {
   state.config = await api('config', { method: 'POST', body: { input, output: $('output-path').value.trim(), watch: $('watch').checked } });
   $('input-path').value = state.config.input;
-  $('output-hint').textContent = `当前导出：${state.config.output}。目录不存在时自动创建。`;
-  $('watch-label').textContent = state.config.watch ? '自动刷新中' : '手动刷新';
+  $('output-hint').textContent = t('output.hint', { path: state.config.output });
+  $('watch-label').textContent = t(state.config.watch ? 'watch.active' : 'watch.manual');
 }
 async function applyInput() {
-  if (state.scanning || state.busy || state.importing) { toast('素材正在读取，请稍后再切换目录'); return; }
+  if (state.scanning || state.busy || state.importing) { toast('toast.reading'); return; }
   await saveConfig($('input-path').value.trim()); await refreshLibrary(true);
 }
 async function browse(kind) {
-  const button = $(`browse-${kind}`); button.disabled = true; toast('请选择文件夹；目录选择窗口可能位于浏览器后方。');
+  const button = $(`browse-${kind}`); button.disabled = true; toast('toast.browse');
   try {
-    const result = await api('choose-folder', { method: 'POST', body: { initial: $(`${kind}-path`).value || state.config[kind] } });
+    const result = await api('choose-folder', { method: 'POST', body: { initial: $(`${kind}-path`).value || state.config[kind], language: getLanguage() } });
     if (!result.path) return;
     $(`${kind}-path`).value = result.path;
-    if (kind === 'input') await applyInput(); else { await saveConfig(); toast('导出目录已更新'); }
+    if (kind === 'input') await applyInput(); else { await saveConfig(); toast('toast.output'); }
   } finally { button.disabled = state.busy; }
 }
 
 async function importFiles(entries) {
-  if (state.busy || state.importing) { toast('当前任务进行中，请完成后再添加素材'); return; }
+  if (state.busy || state.importing) { toast('toast.busy'); return; }
   state.importing = true; updateCounts();
   try {
     let added = 0, ignored = 0;
+    const addedAt = Date.now();
     for (const { file, relativePath } of entries) {
       if (!supported.test(file.name)) { ignored++; continue; }
       const relative = relativePath || file.webkitRelativePath || file.name;
       const id = `drop:${relative}:${file.size}:${file.lastModified}`;
       if (state.items.has(id)) continue;
-      const item = { id, name: file.name, relativePath: relative, file, size: file.size, modified: file.lastModified, source: 'drop', selected: true };
+      const item = { id, name: file.name, relativePath: relative, file, size: file.size, modified: file.lastModified, source: 'drop', selected: true, addedAt };
       state.items.set(id, item); queueThumbnail(item); added++;
     }
-    renderLibrary(); log(`导入 ${added} 张图片${ignored ? `；忽略 ${ignored} 个不支持的文件` : ''}。导入素材已自动勾选。`); toast(`已添加 ${added} 张图片`);
+    renderLibrary(); log('log.imported', 'neutral', { count: added, ignored }); toast('toast.added', { count: added });
   } finally { state.importing = false; updateCounts(); }
 }
 async function collectEntry(entry, base = '') {
@@ -219,23 +215,23 @@ async function collectEntry(entry, base = '') {
 
 async function preview(item) {
   if (state.busy) return;
-  $('preview-name').textContent = item.relativePath; $('preview-content').replaceChildren(); $('preview-note').textContent = '正在生成预览…';
+  $('preview-name').removeAttribute('data-i18n'); $('preview-name').textContent = item.relativePath; $('preview-content').replaceChildren(); $('preview-note').textContent = t('preview.preparing');
   if (!$('preview').open) $('preview').showModal();
   const source = await loadSource(item);
   try {
     const rendered = await renderImage(source.image, options(), $('format').value);
     if (!$('preview').open) return;
-    const original = element('div', 'preview-box'); original.append(element('h3', '', '原图'));
+    const original = element('div', 'preview-box'); original.append(element('h3', '', t('preview.original')));
     const originalContainer = element('div', 'preview-image');
     const originalThumb = document.createElement('canvas'); const ratio = Math.min(1, 700 / source.image.naturalWidth, 700 / source.image.naturalHeight); originalThumb.width = Math.max(1, Math.round(source.image.naturalWidth * ratio)); originalThumb.height = Math.max(1, Math.round(source.image.naturalHeight * ratio)); originalThumb.getContext('2d').drawImage(source.image, 0, 0, originalThumb.width, originalThumb.height); originalContainer.append(originalThumb);
     original.append(originalContainer, element('p', '', `${source.image.naturalWidth} × ${source.image.naturalHeight} px · ${bytes(item.size)}`));
-    const result = element('div', 'preview-box'); result.append(element('h3', '', '处理后'));
+    const result = element('div', 'preview-box'); result.append(element('h3', '', t('preview.result')));
     const resultContainer = element('div', 'preview-image');
     // Preview the encoded output too, so JPG/WebP quality is visible.
-    const url = URL.createObjectURL(rendered.blob); const resultImage = element('img'); resultImage.src = url; resultImage.alt = '处理后预览'; await resultImage.decode(); URL.revokeObjectURL(url); resultContainer.append(resultImage);
+    const url = URL.createObjectURL(rendered.blob); const resultImage = element('img'); resultImage.src = url; resultImage.alt = t('preview.alt'); await resultImage.decode(); URL.revokeObjectURL(url); resultContainer.append(resultImage);
     result.append(resultContainer, element('p', '', `${rendered.layout.width} × ${rendered.layout.height} px · ${bytes(rendered.blob.size)}`));
-    $('preview-content').replaceChildren(original, result); $('preview-note').textContent = '预览自适应窗口大小，标注尺寸为实际输出尺寸。棋盘格代表透明区域。';
-  } catch (error) { $('preview-note').textContent = error.message; }
+    $('preview-content').replaceChildren(original, result); $('preview-note').textContent = t('preview.note');
+  } catch (error) { $('preview-note').textContent = errorText(error); }
   finally { source.dispose(); }
 }
 
@@ -247,11 +243,11 @@ async function exportSelected() {
   if (!['png', 'jpeg', 'webp'].includes(format)) throw new Error('不支持的导出格式');
   if (format !== 'png' && (!Number.isFinite(settings.quality) || settings.quality < 0.01 || settings.quality > 1)) throw new Error('编码质量必须为 1–100');
   state.cancelled = false; setBusy(true); let saved = 0, skipped = 0, failed = 0, attempted = 0;
-  $('progress').max = items.length; $('progress').value = 0; $('progress-label').textContent = '准备导出…';
+  $('progress').max = items.length; $('progress').value = 0; progressMessage('export.preparing');
   try {
     // Persist the explicit output path before any file is written.
     await saveConfig();
-    log(`开始导出 ${items.length} 张 → ${state.config.output}`);
+    log('log.exportStart', 'neutral', { count: items.length, path: state.config.output });
     for (const item of items) {
       if (state.cancelled) break;
       attempted++; let source;
@@ -261,22 +257,23 @@ async function exportSelected() {
         const rendered = await renderImage(source.image, settings, format);
         const name = outputName(item.relativePath, format, suffix, preserve);
         const result = await api(`export?name=${encodeURIComponent(name)}&collision=${collision}`, { method: 'POST', body: rendered.blob, raw: true });
-        if (result.status === 'skipped') { skipped++; log(`跳过同名文件：${result.path}`); }
-        else { saved++; log(`已保存 ${rendered.layout.width} × ${rendered.layout.height} · ${bytes(result.size)} → ${result.path}`, 'success'); }
+        if (result.status === 'skipped') { skipped++; log('log.skipped', 'neutral', { path: result.path }); }
+        else { saved++; log('log.saved', 'success', { width: rendered.layout.width, height: rendered.layout.height, size: bytes(result.size), path: result.path }); }
         item.error = ''; repaintItem(item);
-      } catch (error) { failed++; item.error = error.message; repaintItem(item); log(`${item.relativePath}：${error.message}`, 'error'); }
+      } catch (error) { failed++; item.error = error.message; repaintItem(item); log('log.fileError', 'error', { name: item.relativePath, error: error.message }); }
       finally { source?.dispose(); }
       $('progress').value = attempted;
       await new Promise(resolve => setTimeout(resolve, 0));
     }
-    const summary = `${state.cancelled ? '已停止' : '处理完成'}：保存 ${saved}，跳过 ${skipped}，失败 ${failed}${state.cancelled ? `，未处理 ${items.length - attempted}` : ''}`;
-    $('progress-label').textContent = summary; log(summary, failed ? 'error' : 'success'); toast(summary);
+    const key = state.cancelled ? 'export.stopped' : 'export.complete';
+    const params = { saved, skipped, failed, remaining: items.length - attempted };
+    progressMessage(key, params); log(key, failed ? 'error' : 'success', params); toast(key, params);
   } finally { setBusy(false); }
 }
 
 for (const mode of MODES) {
   const button = element('button', 'mode-button'); button.type = 'button'; button.dataset.mode = mode.id;
-  const text = element('div'); text.append(element('strong', '', mode.title), element('small', '', mode.description)); button.append(element('span', 'mode-icon', mode.icon), text);
+  const text = element('div'); text.append(element('strong', '', t(`mode.${mode.id}.title`)), element('small', '', t(`mode.${mode.id}.description`))); button.append(element('span', 'mode-icon', mode.icon), text);
   button.addEventListener('click', () => setMode(mode.id)); $('modes').append(button);
 }
 try {
@@ -284,7 +281,7 @@ try {
   for (const id of preferenceIds) if (stored[id] !== undefined) { if ($(id).type === 'checkbox') $(id).checked = stored[id]; else $(id).value = stored[id]; }
   if (MODES.some(mode => mode.id === stored.mode)) state.mode = stored.mode;
 } catch {}
-setMode(state.mode); formatChanged();
+setMode(state.mode); formatChanged(); updateCounts();
 for (const id of preferenceIds) on(id, 'input', () => { remember(); updateTargets(); if (id === 'format') formatChanged(); });
 on('search', 'input', renderLibrary);
 on('select-all', 'click', () => { for (const item of visibleItems()) item.selected = true; renderLibrary(); });
@@ -309,11 +306,11 @@ $('dropzone').addEventListener('drop', event => {
   (async () => {
     let files = fallback;
     if (entries.length) {
-      $('progress-label').textContent = '正在读取拖入的文件夹…'; files = [];
+      progressMessage('folder.reading'); files = [];
       for (const entry of entries) files.push(...await collectEntry(entry));
     }
     state.importing = false;
-    await importFiles(files); $('progress-label').textContent = '';
+    await importFiles(files); lastProgress = null; $('progress-label').textContent = '';
   })().catch(errorReport).finally(() => { state.importing = false; updateCounts(); });
 });
 // Prevent accidental browser navigation if a file is dropped just outside the drop area.
@@ -321,21 +318,36 @@ window.addEventListener('dragover', event => event.preventDefault());
 window.addEventListener('drop', event => event.preventDefault());
 on('apply-input', 'click', applyInput);
 on('input-path', 'keydown', event => { if (event.key === 'Enter') return applyInput(); });
-on('output-path', 'change', async () => { await saveConfig(); toast('导出目录已保存'); });
+on('output-path', 'change', async () => { await saveConfig(); toast('toast.output'); });
 on('watch', 'change', () => saveConfig());
 on('refresh', 'click', () => refreshLibrary(true));
 on('browse-input', 'click', () => browse('input')); on('browse-output', 'click', () => browse('output'));
 on('export', 'click', exportSelected);
-on('cancel', 'click', () => { state.cancelled = true; $('cancel').disabled = true; $('cancel').textContent = '正在停止…'; });
+on('cancel', 'click', () => { state.cancelled = true; $('cancel').disabled = true; $('cancel').textContent = t('export.stopping'); });
 on('open-output', 'click', async () => { await saveConfig(); await api('open-output', { method: 'POST' }); });
 on('clear-log', 'click', () => $('log').replaceChildren());
 on('close-preview', 'click', () => $('preview').close());
 on('preview', 'click', event => { if (event.target === $('preview')) { const rect = $('preview').getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('preview').close(); } });
 
+window.addEventListener('resize-language-change', () => {
+  for (const button of $('modes').children) {
+    button.querySelector('strong').textContent = t(`mode.${button.dataset.mode}.title`);
+    button.querySelector('small').textContent = t(`mode.${button.dataset.mode}.description`);
+  }
+  setMode(state.mode); renderLibrary();
+  if (state.config) {
+    $('output-hint').textContent = t('output.hint', { path: state.config.output });
+    $('watch-label').textContent = t(state.config.watch ? 'watch.active' : 'watch.manual');
+  }
+  for (const row of $('log').children) if (row.message) renderLog(row);
+  if (lastToast) $('toast').textContent = messageText(lastToast);
+  if (lastProgress) $('progress-label').textContent = messageText(lastProgress);
+});
+
 async function initialize() {
   state.config = await api('config'); $('input-path').value = state.config.input; $('output-path').value = state.config.output; $('watch').checked = state.config.watch;
-  $('output-hint').textContent = `当前导出：${state.config.output}。留空使用默认 output。`;
+  $('output-hint').textContent = t('output.hint', { path: state.config.output });
   await refreshLibrary(true); updateCounts();
-  setInterval(() => { if (state.config.watch) refreshLibrary().catch(error => { $('watch-label').textContent = '读取失败，可手动刷新'; console.warn(error.message); }); }, 3000);
+  setInterval(() => { if (state.config.watch) refreshLibrary().catch(error => { $('watch-label').textContent = t('watch.failed'); console.warn(error.message); }); }, 3000);
 }
 initialize().catch(errorReport);

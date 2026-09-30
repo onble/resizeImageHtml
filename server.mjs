@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const types = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' };
-const staticTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8' };
+const staticTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 
 export function within(root, target) {
   const relative = path.relative(path.resolve(root), path.resolve(target));
@@ -92,12 +92,12 @@ async function readBody(request, limit = 80 * 1024 * 1024) {
   return Buffer.concat(chunks);
 }
 
-async function chooseFolder(initial) {
+async function chooseFolder(initial, language = 'en') {
   if (process.platform !== 'win32') throw new Error('目录选择窗口仅支持 Windows；请直接输入绝对路径');
   const script = `Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '选择图片输入目录或导出目录'
+$dialog.Description = '${language === 'zh' ? '选择图片输入目录或导出目录' : 'Choose an input or output folder'}'
 $dialog.SelectedPath = $env:RESIZE_INITIAL_PATH
 $dialog.ShowNewFolderButton = $true
 if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($dialog.SelectedPath) }
@@ -160,7 +160,7 @@ export async function createApp({ input, output, persist = true, projectDir = he
         }
         if (url.pathname === '/api/choose-folder' && request.method === 'POST') {
           const body = JSON.parse((await readBody(request, 65536)).toString());
-          json(200, { path: await chooseFolder(directory(body.initial || config.input)) }); return;
+          json(200, { path: await chooseFolder(directory(body.initial || config.input), body.language) }); return;
         }
         if (url.pathname === '/api/open-output' && request.method === 'POST') {
           const outputDirectory = directory(config.output);
@@ -173,7 +173,7 @@ export async function createApp({ input, output, persist = true, projectDir = he
         json(404, { error: '接口不存在' }); return;
       }
       if (request.method !== 'GET') { json(405, { error: '方法不支持' }); return; }
-      const routes = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css', '/resize.mjs': 'resize.mjs' };
+      const routes = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/theme.js': 'theme.js', '/i18n.js': 'i18n.js', '/styles.css': 'styles.css', '/resize.mjs': 'resize.mjs', '/library.mjs': 'library.mjs', '/favicon.svg': 'favicon.svg' };
       const filename = routes[url.pathname];
       if (!filename) { json(404, { error: '文件不存在' }); return; }
       let bytes = await fs.readFile(path.join(here, 'public', filename));
