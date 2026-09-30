@@ -64,6 +64,16 @@ test('真实目录扫描、输出冲突处理、源文件保护和本地接口�
   assert.equal(languageScript.status, 200);
   assert.match(languageScript.headers.get('content-type'), /text\/javascript/);
   assert.match(await languageScript.text(), /resize-studio-language/);
+  const wasm = await fetch(`${base}/vendor/oxipng/squoosh_oxipng_bg.wasm`);
+  assert.equal(wasm.status, 200); assert.equal(wasm.headers.get('content-type'), 'application/wasm');
+  assert.deepEqual([...new Uint8Array(await wasm.arrayBuffer()).subarray(0, 4)], [0, 97, 115, 109]);
+  assert.match(wasm.headers.get('content-security-policy'), /'wasm-unsafe-eval'/);
+  assert.match(wasm.headers.get('content-security-policy'), /worker-src 'self'/);
+  assert.doesNotMatch(wasm.headers.get('content-security-policy'), /'unsafe-eval'/);
+  for (const route of ['png-optimizer.mjs', 'png-worker.mjs', 'vendor/oxipng/squoosh_oxipng.js']) {
+    const response = await fetch(`${base}/${route}`); assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /text\/javascript/);
+  }
+  assert.equal((await fetch(`${base}/vendor/oxipng/unknown.js`)).status, 404);
   const token = html.match(/name="resize-token" content="([^"]+)"/)[1];
   assert.equal((await fetch(`${base}/api/config`)).status, 403);
   assert.equal((await fetch(`${base}/api/config`, { headers: { 'X-Resize-Token': token, Origin: 'https://example.com' } })).status, 403);

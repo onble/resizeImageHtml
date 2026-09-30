@@ -18,11 +18,14 @@
 | public/app.js | 模式按钮、拖入、递归读取目录、缩略图、选择/搜索、配置、监听、预览和逐张导出 |
 | public/library.mjs | 素材列表同步、运行期间新增自动选择、时间与名称排序 |
 | public/resize.mjs | MODES 模式注册；geometry 纯尺寸/绘制布局；outputName 命名；renderImage Canvas 渲染与编码 |
+| public/png-optimizer.mjs / png-worker.mjs | PNG 无损优化会话、Worker 复用、超时/取消/失败回退 |
+| public/vendor/oxipng/ | 本地 @jsquash/oxipng 2.3.0 单线程 JS/WASM 及 Apache/MIT 许可证 |
 | server.mjs | 本机静态服务、带令牌的目录 API、原生目录选择窗口、路径与输出保护 |
 | start.ps1 / start.cmd | 检查 Node 和端口，在后台启动服务并打开浏览器 |
 | stop.ps1 / 停止工具.cmd | 校验 PID 与命令行后停止本项目服务 |
 | tests/core.test.mjs | 纯逻辑与临时目录/HTTP 集成验证 |
 | tests/localization.test.mjs | 双语完整性、语言记忆、主题标签、DOM 桩中运行真实前端脚本验证参数/选择/记录 |
+| tests/png-optimizer.test.mjs | 真实 WASM / RGBA 往返验证、回退、Worker 复用、超时和取消 |
 | settings.json | 运行时生成，输入/输出目录和监听设置；不提交，不覆盖用户配置 |
 | .runtime/ | 启动日志和 PID；不提交 |
 
@@ -34,7 +37,7 @@
 4. 为有效场景与关键边界增加少量有意义的测试。验证实际编码图片的尺寸和透明度，前后预览应与导出一致。
 5. 更新英文 README.md 和中文 README.zh-CN.md 的功能表、参数和限制。
 
-批量导出统一经过 exportSelected → loadSource → renderImage → outputName → /api/export。新按钮应复用这条链路。每张错误单独记录，继续后续文件；停止按钮只停止剩余任务，保留已写入文件。
+批量导出统一经过 exportSelected → loadSource → renderImage → optimizeOutput → outputName → /api/export。新按钮应复用这条链路。每张错误单独记录，继续后续文件；停止按钮取消正在优化且尚未写入的文件和剩余任务，保留已写入文件。
 
 ## 输入与监听
 
@@ -52,6 +55,14 @@
 safeRelative 限制越界和 Windows 非法文件名；noLinks 避免子目录链接。saveImage 使用 wx 原子写入做自动重命名/跳过，覆盖需明确策略。输入目录下的目标拒绝写入。浏览器拖入文件无绝对源路径，文档已提醒用户将输出与原图分开。
 
 PNG 与 WebP 保留透明，JPG 补白背景；输出扩展名必须匹配编码类型。文件体积目标尚未实现，不能把指定宽高描述成「压到指定 KB」。Canvas 平滑与 Pillow LANCZOS 结果不是逐像素一致。
+
+## PNG 无损优化
+
+png-optimize 默认 checked，随 preferenceIds 记忆；formatChanged 只在 PNG 显示。optimizeOutput 供预览和导出共用，不改 geometry、Canvas 绘制和 JPG/WebP。createPngOptimizer 每个批次/预览拥有一个可复用 Worker，逐张 optimize；结束 dispose，失败/超时/取消终止 Worker，下次可重建。Blob.arrayBuffer 的私有副本可转移，原始 Blob 保留，失败直接回退。30 秒超时，候选 PNG 验证签名/IHDR/尺寸且必须严格更小。
+
+Worker 从本地 vendor 加载固定的单线程 codec，调用 optimise(bytes, 2, false, false)。不能开启透明像素 RGB 改写或量化。日志只保留 status/originalBytes/optimizedBytes/savedBytes，并通过 optimizationText 根据当前语言展示；不能保存整张 Blob。批次总节省只计实际成功写入的文件。预览关闭和停止按钮接入 AbortController，取消当前尚未写入的图片不计失败。
+
+服务端静态白名单明确包含模块/Worker/vendor JS/WASM，WASM MIME 为 application/wasm。CSP 仅增加 wasm-unsafe-eval 和 worker-src self，不放开通用 unsafe-eval 或远程资源。参考 [MDN WebAssembly CSP](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Security-Policy/script-src#unsafe_webassembly_execution)。测试中使用 Node Worker 适配器运行真实 Worker/codec，不等于浏览器排版实测；更换 codec 时必须验证 RGBA 和透明像素 RGB。
 
 ## 视觉主题约定
 

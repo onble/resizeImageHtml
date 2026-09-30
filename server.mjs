@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const types = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' };
-const staticTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+const staticTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.wasm': 'application/wasm' };
 
 export function within(root, target) {
   const relative = path.relative(path.resolve(root), path.resolve(target));
@@ -174,11 +174,12 @@ export async function createApp({ input, output, persist = true, projectDir = he
       }
       if (request.method !== 'GET') { json(405, { error: '方法不支持' }); return; }
       const routes = { '/': 'index.html', '/index.html': 'index.html', '/app.js': 'app.js', '/theme.js': 'theme.js', '/i18n.js': 'i18n.js', '/styles.css': 'styles.css', '/resize.mjs': 'resize.mjs', '/library.mjs': 'library.mjs', '/favicon.svg': 'favicon.svg' };
+      Object.assign(routes, { '/png-optimizer.mjs': 'png-optimizer.mjs', '/png-worker.mjs': 'png-worker.mjs', '/vendor/oxipng/squoosh_oxipng.js': 'vendor/oxipng/squoosh_oxipng.js', '/vendor/oxipng/squoosh_oxipng_bg.wasm': 'vendor/oxipng/squoosh_oxipng_bg.wasm' });
       const filename = routes[url.pathname];
       if (!filename) { json(404, { error: '文件不存在' }); return; }
       let bytes = await fs.readFile(path.join(here, 'public', filename));
       if (filename === 'index.html') bytes = Buffer.from(bytes.toString().replace('__RESIZE_TOKEN__', token));
-      response.writeHead(200, { 'Content-Type': staticTypes[path.extname(filename)], 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'" });
+      response.writeHead(200, { 'Content-Type': staticTypes[path.extname(filename)], 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'" });
       response.end(bytes);
     } catch (error) { json(400, { error: error.message }); }
   });

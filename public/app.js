@@ -1,16 +1,27 @@
 import { MODES, geometry, outputName, renderImage } from './resize.mjs';
 import { compareAssets, reconcileLibrary } from './library.mjs';
+import { createPngOptimizer } from './png-optimizer.mjs';
 
 const { t, errorText, getLanguage } = window.ResizeI18n;
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="resize-token"]').content;
 const supported = /\.(png|jpe?g|webp|bmp)$/i;
 const state = { mode: 'height', items: new Map(), config: null, libraryRoot: null, busy: false, scanning: false, importing: false, cancelled: false, thumbnailQueue: [], thumbnailWorkers: 0 };
-let toastTimer, lastToast, lastProgress;
+let toastTimer, lastToast, lastProgress, previewController, exportController;
 const bytes = value => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
 const element = (tag, className, value) => { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; };
 
-function messageText({ key, params }) { return t(key, { ...params, ...(params.error !== undefined ? { error: errorText(params.error) } : {}) }); }
+function optimizationText(result) {
+  if (result.status === 'optimized') return t('png.optimized', { before: bytes(result.originalBytes), after: bytes(result.optimizedBytes), saved: bytes(result.savedBytes), percent: (100 * result.savedBytes / result.originalBytes).toFixed(1) });
+  if (result.status === 'unchanged') return t('png.unchanged');
+  return t(result.status === 'timed-out' ? 'png.timedOut' : 'png.failed');
+}
+function messageText({ key, params }) { return t(key, { ...params, ...(params.error !== undefined ? { error: errorText(params.error) } : {}), ...(params.optimization ? { detail: optimizationText(params.optimization) } : {}) }); }
+async function optimizeOutput(rendered, settings, format, optimizer, signal) {
+  if (format !== 'png' || !settings.pngOptimize) return rendered;
+  const optimization = await optimizer.optimize(rendered.blob, { signal });
+  return { ...rendered, blob: optimization.blob, optimization };
+}
 function renderLog(row) {
   row.textContent = row.message.at.toLocaleTimeString(getLanguage() === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) + '  ' + messageText(row.message);
 }
@@ -30,7 +41,7 @@ async function api(route, { method = 'GET', body, raw = false } = {}) {
 }
 
 function options() {
-  return { mode: state.mode, width: Number($('width').value), height: Number($('height').value), percent: Number($('percent').value), fit: $('fit').value, nearest: $('nearest').checked, allowUpscale: $('allow-upscale').checked, quality: Number($('quality').value) / 100 };
+  return { mode: state.mode, width: Number($('width').value), height: Number($('height').value), percent: Number($('percent').value), fit: $('fit').value, nearest: $('nearest').checked, allowUpscale: $('allow-upscale').checked, quality: Number($('quality').value) / 100, pngOptimize: $('png-optimize').checked };
 }
 function selectedItems() { return [...state.items.values()].filter(item => item.selected); }
 function visibleItems() {
@@ -94,13 +105,13 @@ function setMode(mode) {
   }));
   updateTargets(); remember();
 }
-const preferenceIds = ['height', 'width', 'percent', 'fit', 'allow-upscale', 'nearest', 'format', 'collision', 'suffix', 'preserve', 'quality'];
+const preferenceIds = ['height', 'width', 'percent', 'fit', 'allow-upscale', 'nearest', 'format', 'collision', 'suffix', 'preserve', 'quality', 'png-optimize'];
 function remember() {
   const values = { mode: state.mode };
   for (const id of preferenceIds) values[id] = $(id).type === 'checkbox' ? $(id).checked : $(id).value;
   try { localStorage.setItem('resize-studio-options', JSON.stringify(values)); } catch {}
 }
-function formatChanged() { $('quality-field').hidden = $('format').value === 'png'; remember(); }
+function formatChanged() { $('quality-field').hidden = $('format').value === 'png'; $('png-optimize-field').hidden = $('format').value !== 'png'; remember(); }
 function setBusy(busy) {
   state.busy = busy; $('language-select').disabled = busy;
   for (const node of document.querySelectorAll('main button, main input, main select, .image-card input')) node.disabled = busy;
@@ -215,24 +226,32 @@ async function collectEntry(entry, base = '') {
 
 async function preview(item) {
   if (state.busy) return;
+  previewController?.abort();
+  const controller = new AbortController(); previewController = controller;
+  const optimizer = createPngOptimizer(); const settings = options(), format = $('format').value;
   $('preview-name').removeAttribute('data-i18n'); $('preview-name').textContent = item.relativePath; $('preview-content').replaceChildren(); $('preview-note').textContent = t('preview.preparing');
   if (!$('preview').open) $('preview').showModal();
-  const source = await loadSource(item);
+  let source;
   try {
-    const rendered = await renderImage(source.image, options(), $('format').value);
-    if (!$('preview').open) return;
+    source = await loadSource(item);
+    if (controller.signal.aborted) return;
+    const rendered = await optimizeOutput(await renderImage(source.image, settings, format), settings, format, optimizer, controller.signal);
+    if (controller.signal.aborted || !$('preview').open) return;
     const original = element('div', 'preview-box'); original.append(element('h3', '', t('preview.original')));
     const originalContainer = element('div', 'preview-image');
     const originalThumb = document.createElement('canvas'); const ratio = Math.min(1, 700 / source.image.naturalWidth, 700 / source.image.naturalHeight); originalThumb.width = Math.max(1, Math.round(source.image.naturalWidth * ratio)); originalThumb.height = Math.max(1, Math.round(source.image.naturalHeight * ratio)); originalThumb.getContext('2d').drawImage(source.image, 0, 0, originalThumb.width, originalThumb.height); originalContainer.append(originalThumb);
     original.append(originalContainer, element('p', '', `${source.image.naturalWidth} × ${source.image.naturalHeight} px · ${bytes(item.size)}`));
     const result = element('div', 'preview-box'); result.append(element('h3', '', t('preview.result')));
     const resultContainer = element('div', 'preview-image');
-    // Preview the encoded output too, so JPG/WebP quality is visible.
-    const url = URL.createObjectURL(rendered.blob); const resultImage = element('img'); resultImage.src = url; resultImage.alt = t('preview.alt'); await resultImage.decode(); URL.revokeObjectURL(url); resultContainer.append(resultImage);
+    // Preview the final encoded output, including PNG optimization.
+    const url = URL.createObjectURL(rendered.blob); const resultImage = element('img'); resultImage.src = url; resultImage.alt = t('preview.alt');
+    try { await resultImage.decode(); } finally { URL.revokeObjectURL(url); }
+    if (controller.signal.aborted || !$('preview').open) return;
+    resultContainer.append(resultImage);
     result.append(resultContainer, element('p', '', `${rendered.layout.width} × ${rendered.layout.height} px · ${bytes(rendered.blob.size)}`));
-    $('preview-content').replaceChildren(original, result); $('preview-note').textContent = t('preview.note');
-  } catch (error) { $('preview-note').textContent = errorText(error); }
-  finally { source.dispose(); }
+    $('preview-content').replaceChildren(original, result); $('preview-note').textContent = t('preview.note') + (rendered.optimization ? ' ' + optimizationText(rendered.optimization) : '');
+  } catch (error) { if (!controller.signal.aborted) $('preview-note').textContent = errorText(error); }
+  finally { optimizer.dispose(); source?.dispose(); if (previewController === controller) previewController = null; }
 }
 
 async function exportSelected() {
@@ -242,7 +261,9 @@ async function exportSelected() {
   if (/[<>:"/\\|?*\x00-\x1f]/.test(suffix)) throw new Error('文件名后缀不能包含路径或特殊字符');
   if (!['png', 'jpeg', 'webp'].includes(format)) throw new Error('不支持的导出格式');
   if (format !== 'png' && (!Number.isFinite(settings.quality) || settings.quality < 0.01 || settings.quality > 1)) throw new Error('编码质量必须为 1–100');
-  state.cancelled = false; setBusy(true); let saved = 0, skipped = 0, failed = 0, attempted = 0;
+  const controller = new AbortController(); exportController = controller;
+  const optimizer = createPngOptimizer();
+  state.cancelled = false; setBusy(true); let saved = 0, skipped = 0, failed = 0, attempted = 0, savedBytes = 0;
   $('progress').max = items.length; $('progress').value = 0; progressMessage('export.preparing');
   try {
     // Persist the explicit output path before any file is written.
@@ -254,11 +275,22 @@ async function exportSelected() {
       $('progress-label').textContent = `${attempted} / ${items.length} · ${item.relativePath}`;
       try {
         source = await loadSource(item);
-        const rendered = await renderImage(source.image, settings, format);
+        const baseline = await renderImage(source.image, settings, format);
+        if (format === 'png' && settings.pngOptimize) progressMessage('png.processing', { position: attempted, total: items.length, name: item.relativePath });
+        const rendered = await optimizeOutput(baseline, settings, format, optimizer, controller.signal);
+        if (state.cancelled) { attempted--; break; }
         const name = outputName(item.relativePath, format, suffix, preserve);
         const result = await api(`export?name=${encodeURIComponent(name)}&collision=${collision}`, { method: 'POST', body: rendered.blob, raw: true });
         if (result.status === 'skipped') { skipped++; log('log.skipped', 'neutral', { path: result.path }); }
-        else { saved++; log('log.saved', 'success', { width: rendered.layout.width, height: rendered.layout.height, size: bytes(result.size), path: result.path }); }
+        else {
+          saved++; log('log.saved', 'success', { width: rendered.layout.width, height: rendered.layout.height, size: bytes(result.size), path: result.path });
+          if (rendered.optimization) {
+            savedBytes += rendered.optimization.savedBytes;
+            // Keep only numeric metadata in activity, never hold full image Blobs.
+            const { status, originalBytes, optimizedBytes, savedBytes: saving } = rendered.optimization;
+            log('log.png', status === 'optimized' ? 'success' : 'neutral', { name: item.relativePath, optimization: { status, originalBytes, optimizedBytes, savedBytes: saving } });
+          }
+        }
         item.error = ''; repaintItem(item);
       } catch (error) { failed++; item.error = error.message; repaintItem(item); log('log.fileError', 'error', { name: item.relativePath, error: error.message }); }
       finally { source?.dispose(); }
@@ -268,7 +300,8 @@ async function exportSelected() {
     const key = state.cancelled ? 'export.stopped' : 'export.complete';
     const params = { saved, skipped, failed, remaining: items.length - attempted };
     progressMessage(key, params); log(key, failed ? 'error' : 'success', params); toast(key, params);
-  } finally { setBusy(false); }
+    if (format === 'png' && settings.pngOptimize) log('png.batch', 'neutral', { saved: bytes(savedBytes) });
+  } finally { optimizer.dispose(); exportController = null; setBusy(false); }
 }
 
 for (const mode of MODES) {
@@ -323,10 +356,12 @@ on('watch', 'change', () => saveConfig());
 on('refresh', 'click', () => refreshLibrary(true));
 on('browse-input', 'click', () => browse('input')); on('browse-output', 'click', () => browse('output'));
 on('export', 'click', exportSelected);
-on('cancel', 'click', () => { state.cancelled = true; $('cancel').disabled = true; $('cancel').textContent = t('export.stopping'); });
+on('cancel', 'click', () => { state.cancelled = true; exportController?.abort(); $('cancel').disabled = true; $('cancel').textContent = t('export.stopping'); });
 on('open-output', 'click', async () => { await saveConfig(); await api('open-output', { method: 'POST' }); });
 on('clear-log', 'click', () => $('log').replaceChildren());
 on('close-preview', 'click', () => $('preview').close());
+on('preview', 'close', () => previewController?.abort());
+window.addEventListener('beforeunload', () => { previewController?.abort(); exportController?.abort(); });
 on('preview', 'click', event => { if (event.target === $('preview')) { const rect = $('preview').getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('preview').close(); } });
 
 window.addEventListener('resize-language-change', () => {

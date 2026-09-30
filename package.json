@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "description": "A local image workbench for batch resizing",
-  "scripts": { "start": "node server.mjs", "test": "node --test tests/core.test.mjs tests/localization.test.mjs" },
+  "scripts": { "start": "node server.mjs", "test": "node --test tests/core.test.mjs tests/localization.test.mjs tests/png-optimizer.test.mjs" },
   "engines": { "node": ">=20" }
 }

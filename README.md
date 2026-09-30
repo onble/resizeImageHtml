@@ -8,7 +8,7 @@ A local image workbench for fast, repeatable batch resizing. Drop your assets, c
 
 On Windows, double-click **start.cmd**. The service runs in the background and opens `http://127.0.0.1:4178` in your default browser. Starting it again opens the existing session. Double-click **停止工具.cmd** to stop the service.
 
-Requires **Node.js 20 or later**. There are no third-party dependencies, build steps, or Python requirements. You do not need to run `npm install`.
+Requires **Node.js 20 or later**. No npm installation, build step, or Python environment is required. The PNG optimizer is bundled locally with its license notices; you do not need to run `npm install`.
 
 ```sh
 npm start
@@ -23,6 +23,7 @@ This runs the server in the foreground; closing the terminal stops it. Open the 
 - **Before-and-after previews:** compare output dimensions, transparency, and encoded quality.
 - **Folder watching:** discover new images every three seconds, select them automatically, and show them first.
 - **Direct export:** write to your chosen destination with optional subfolders, filename suffixes, and collision handling.
+- **Lossless PNG optimization:** enabled by default, with per-file and batch savings shown in Activity; keep the original encoding when optimization is not useful or unavailable.
 - **English / 中文:** switch from the header. English is the default; your choice is remembered in this browser.
 - **Light / dark mode:** a blue accent with neutral work surfaces; the theme is remembered independently of language.
 - **Local processing:** Canvas handles the images in your browser; Node.js handles local filesystem access. No cloud uploads.
@@ -49,6 +50,18 @@ Switching language preserves your selections, filenames, folder paths, and resiz
 | Fit within bounds | Fit proportionally within maximum dimensions and export the actual size without padding. |
 
 Upscaling is disabled by default; enable **Allow upscaling** when needed. Use **Pixel art / nearest neighbor** for crisp pixel assets. Other images use the browser's high-quality smoothing. This differs from Pillow LANCZOS; compare the preview when visual fidelity matters. Proportional dimension rounding matches Python's rounding at `.5` for compatibility with the original tool.
+
+## Lossless PNG optimization
+
+When PNG is selected, **Optimize PNG losslessly** is checked by default. You can turn it off; the choice is remembered with your resize settings. The option is hidden for JPG/WebP and does not affect those formats.
+
+After resizing and PNG encoding, the bundled OxiPNG codec optimizes the bytes in a Web Worker. It uses level 2, does not quantize colors, and does not rewrite RGB beneath transparent pixels. Only a strictly smaller PNG with matching dimensions is accepted. An unavailable worker, codec failure, or 30-second timeout falls back to the baseline PNG so export can continue.
+
+Preview uses the same optimization path and shows the final encoded file size. Activity reports each file's before/after sizes and savings, plus total savings for files actually written in the batch. Skipped and failed exports do not count toward saved bytes.
+
+A batch reuses its worker. Stop cancels an active optimization and avoids writing a not-yet-exported image; files already saved remain in place. Closing a preview cancels its optimization. Optimization reduces file bytes; resizing itself still changes pixel information.
+
+Bundled files and licenses: [OxiPNG notice](public/vendor/oxipng/NOTICE.md).
 
 ## Folder watching and ordering
 
@@ -86,9 +99,12 @@ The project uses native HTML, CSS, ES modules, and Node.js built-in modules.
 | `public/app.js` | Imports, selections, watching, previews, exports, and translated activity. |
 | `public/library.mjs` | Asset reconciliation and ordering. |
 | `public/resize.mjs` | Geometry, Canvas rendering, encoding, and output naming. |
+| `public/png-optimizer.mjs` / `public/png-worker.mjs` | Reusable worker sessions, lossless PNG optimization, timeouts, cancellation, and fallback. |
+| `public/vendor/oxipng/` | Local JS/WASM codec and third-party notices. |
 | `server.mjs` | Local filesystem APIs and static serving. |
 | `tests/core.test.mjs` | Resize, filesystem, and HTTP checks. |
 | `tests/localization.test.mjs` | Language persistence, translation coverage, theme labels, and application state checks using a DOM stub. |
+| `tests/png-optimizer.test.mjs` | Real WASM round trips, RGBA preservation, fallback, worker reuse, timeout, and cancellation. |
 
 For a future feature, start an AI conversation in this folder with a request such as:
 

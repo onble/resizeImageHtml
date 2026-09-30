@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import { MODES, geometry } from '../public/resize.mjs';
+import { MODES, geometry, outputName } from '../public/resize.mjs';
 import { compareAssets } from '../public/library.mjs';
 
 const read = name => fs.readFile(new URL(`../${name}`, import.meta.url), 'utf8');
@@ -42,6 +42,7 @@ function environment(saved = {}, blockedStorage = false) {
     const attrs = Object.fromEntries([...match[2].matchAll(/([\w-]+)(?:="([^"]*)")?/g)].map(m => [m[1], m[2] ?? '']));
     const node = new Node(match[1], attrs); nodes.push(node); if (attrs.id) ids.set(attrs.id, node);
   }
+  for (const match of html.matchAll(/<select\b[^>]*id="([^"]+)"[^>]*>\s*<option value="([^"]+)"/g)) ids.get(match[1]).value = match[2];
   // Only the descendants queried by the standalone theme script are required.
   const label = nodes.find(node => 'data-theme-label' in node.attributes);
   const themeButton = ids.get('theme-toggle'); themeButton.append(label);
@@ -61,7 +62,7 @@ function environment(saved = {}, blockedStorage = false) {
   const context = vm.createContext({ document, window, Event: class { constructor(type) { this.type = type; } }, localStorage: {
     getItem: key => { if (blockedStorage) throw Error('blocked'); return store.get(key); },
     setItem: (key, value) => { if (blockedStorage) throw Error('blocked'); store.set(key, value); }
-  }, setTimeout: () => 1, clearTimeout: () => {}, fetch: () => new Promise(() => {}), console, MODES, geometry, compareAssets });
+  }, setTimeout: callback => setTimeout(callback, 0), clearTimeout, fetch: () => new Promise(() => {}), console, MODES, geometry, compareAssets, outputName, Blob, AbortController });
   vm.runInContext(i18n, context);
   return { context, document, window, store, ids, label, language: window.ResizeI18n };
 }
@@ -139,4 +140,62 @@ test('actual app language handler preserves selections/options and retranslates 
   assert.match(env.ids.get('log').children[1].textContent, /Cannot decode/);
   assert.equal(env.ids.get('progress-label').textContent, 'Complete: 1 saved, 0 skipped, 1 failed');
   assert.equal(env.ids.get('modes').children[0].querySelector('strong').textContent, 'By height');
+});
+
+test('PNG default survives old preferences; format changes and language keep the saved toggle', () => {
+  for (const savedOptions of [{ height: '108' }, { 'png-optimize': false }]) {
+    const env = environment({ 'resize-studio-options': JSON.stringify(savedOptions) });
+    vm.runInContext(app.replace(/^import .*;\r?\n/gm, ''), env.context);
+    env.document.dispatchEvent({ type: 'DOMContentLoaded' });
+    assert.equal(env.ids.get('png-optimize').checked, savedOptions['png-optimize'] !== false);
+    assert.equal(env.ids.get('png-optimize-field').hidden, false);
+    env.ids.get('format').value = 'jpeg'; vm.runInContext('formatChanged()', env.context);
+    assert.equal(env.ids.get('png-optimize-field').hidden, true);
+    env.ids.get('png-optimize').checked = false; vm.runInContext('remember()', env.context);
+    env.ids.get('format').value = 'png'; vm.runInContext('formatChanged()', env.context);
+    env.language.setLanguage('zh');
+    assert.equal(env.ids.get('png-optimize-field').hidden, false); assert.equal(env.ids.get('png-optimize').checked, false);
+    assert.equal(JSON.parse(env.store.get('resize-studio-options'))['png-optimize'], false);
+  }
+});
+
+test('actual batch submits selected PNG bytes, gates formats, and records only saved-file optimization metadata', async () => {
+  for (const scenario of ['optimized', 'failed', 'off', 'jpeg', 'skip', 'cancel']) {
+    const env = environment(), requests = [];
+    const baseline = new Blob(['baseline PNG bytes']), compressed = new Blob(['PNG']); let calls = 0, disposed = false;
+    env.context.renderImage = async () => ({ blob: baseline, layout: { width: 108, height: 108 } });
+    env.context.createPngOptimizer = () => ({
+      optimize: async (_blob, { signal }) => {
+        calls++;
+        if (scenario === 'cancel') { vm.runInContext('state.cancelled = true; exportController.abort()', env.context); assert(signal.aborted); }
+        const useCompressed = scenario === 'optimized' || scenario === 'skip';
+        return { blob: useCompressed ? compressed : baseline, status: useCompressed ? 'optimized' : scenario === 'cancel' ? 'aborted' : 'failed', originalBytes: baseline.size, optimizedBytes: useCompressed ? compressed.size : baseline.size, savedBytes: useCompressed ? baseline.size - compressed.size : 0 };
+      }, dispose: () => { disposed = true; }
+    });
+    env.context.testApi = async (route, request) => {
+      if (route === 'config') return { input: './input', output: './output', watch: true };
+      if (route.startsWith('export?')) { requests.push(request); return { status: scenario === 'skip' ? 'skipped' : 'saved', size: request.body.size, path: './output/人物.png' }; }
+      throw Error(`Unexpected route: ${route}`);
+    };
+    vm.runInContext(app.replace(/^import .*;\r?\n/gm, ''), env.context);
+    env.document.dispatchEvent({ type: 'DOMContentLoaded' });
+    env.ids.get('png-optimize').checked = scenario !== 'off';
+    env.ids.get('format').value = scenario === 'jpeg' ? 'jpeg' : 'png';
+    vm.runInContext(`
+      api = testApi; loadSource = async () => ({ image: {}, dispose() {} });
+      state.config = { input: './input', output: './output', watch: true };
+      state.items.set('sample', { id: 'sample', name: '人物.png', relativePath: '人物.png', source: 'local', selected: true });
+    `, env.context);
+    await vm.runInContext('exportSelected()', env.context);
+    assert(disposed);
+    assert.equal(calls, scenario === 'off' || scenario === 'jpeg' ? 0 : 1);
+    const optimizationRows = env.ids.get('log').children.filter(row => row.message?.key === 'log.png');
+    if (scenario === 'cancel') { assert.equal(requests.length, 0); assert.match(env.ids.get('progress-label').textContent, /0 failed, 1 remaining/); }
+    else assert.strictEqual(requests[0].body, scenario === 'optimized' || scenario === 'skip' ? compressed : baseline);
+    if (scenario === 'optimized' || scenario === 'failed') {
+      assert.equal(optimizationRows.length, 1); assert(!('blob' in optimizationRows[0].message.params.optimization));
+      env.language.setLanguage('zh'); assert.match(optimizationRows[0].textContent, scenario === 'optimized' ? /节省/ : /保留基础 PNG/);
+    } else assert.equal(optimizationRows.length, 0);
+    if (scenario === 'skip') assert.match(env.ids.get('log').children[0].textContent, /saved 0\.0 KB/);
+  }
 });
