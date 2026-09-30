@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="resize-token" content="__RESIZE_TOKEN__">
+  <title>图片缩放工作台 · Resize Studio</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">↗</span><div><h1>图片缩放工作台</h1><span>RESIZE STUDIO / 本地素材工具</span></div></div>
+    <div class="local-badge"><i></i>本地处理 · 图片无需上传</div>
+  </header>
+  <main>
+    <section class="workspace">
+      <div class="section-heading"><div><span class="eyebrow">01 / 素材</span><h2>把重复操作，交给按钮。</h2><p>选好素材，设置尺寸，一次导出。</p></div><span id="library-count" class="pill">0 张素材</span></div>
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="选择图片或拖入图片与文件夹">
+        <div class="drop-icon">＋</div><strong>拖入图片，或整个文件夹</strong><span>支持 PNG、JPG、WebP、BMP · 可多次添加</span>
+        <div class="drop-actions"><button id="pick-files" class="button dark">选择图片</button><button id="pick-folder" class="button">导入文件夹</button></div>
+      </div>
+      <input id="files-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,.bmp" multiple hidden>
+      <input id="folder-input" type="file" webkitdirectory multiple hidden>
+      <details class="folder-panel" open>
+        <summary>素材目录 <span id="watch-label">自动刷新</span></summary>
+        <div class="path-row"><input id="input-path" aria-label="素材目录路径" placeholder="./input 或自定义目录路径"><button id="browse-input" class="button">浏览</button><button id="apply-input" class="button">加载</button></div>
+        <div class="folder-footer"><label><input id="watch" type="checkbox" checked>监听目录变化</label><span>页面打开时每 3 秒检查一次</span><button id="refresh" class="text-button">立即刷新 ↻</button></div>
+      </details>
+      <div class="library-toolbar"><div><button id="select-all" class="text-button">全选可见</button><button id="select-none" class="text-button">取消选择</button><button id="clear-imports" class="text-button">清空拖入素材</button></div><input id="search" type="search" placeholder="搜索文件名…" aria-label="搜索素材"></div>
+      <div class="library-info"><span id="selection-count">已选择 0 张</span><span>点击图片预览前后效果</span></div>
+      <div id="library" class="library"></div>
+      <div id="empty" class="empty"><span>▧</span><strong>素材区准备好了</strong><p>拖入图片，或加载一个素材目录。</p></div>
+    </section>
+    <aside class="settings">
+      <div class="settings-heading"><span class="eyebrow">02 / 缩放方式</span><h2>你想怎样改变尺寸？</h2></div>
+      <div id="modes" class="mode-grid"></div>
+      <div class="parameter-panel">
+        <div id="height-field" class="field"><label for="height">目标高度 <span>px</span></label><input id="height" type="number" min="1" max="16384" step="1" value="120"></div>
+        <div id="width-field" class="field" hidden><label for="width">目标宽度 <span>px</span></label><input id="width" type="number" min="1" max="16384" step="1" value="108"></div>
+        <div id="percent-field" class="field" hidden><label for="percent">缩放比例 <span>%</span></label><input id="percent" type="number" min="0.01" max="10000" step="0.01" value="50"></div>
+        <div id="fit-field" class="field" hidden><label for="fit">尺寸适配</label><select id="fit"><option value="stretch">拉伸到指定尺寸</option><option value="contain">等比缩放 + 居中留白</option><option value="cover">等比缩放 + 居中裁切</option></select></div>
+        <div id="presets" class="presets"></div><p id="mode-help" class="hint"></p>
+        <div class="options"><label><input id="allow-upscale" type="checkbox">允许放大</label><label><input id="nearest" type="checkbox">像素风 / 最近邻</label></div>
+      </div>
+      <div class="export-heading"><span class="eyebrow">03 / 导出</span><h2>保存到你的素材目录</h2></div>
+      <div class="field"><label for="output-path">目标文件夹</label><div class="path-row"><input id="output-path" placeholder="留空使用 ./output"><button id="browse-output" class="button">浏览</button></div><span id="output-hint" class="hint"></span></div>
+      <div class="two-fields"><div class="field"><label for="format">输出格式</label><select id="format"><option value="png">PNG · 保留透明</option><option value="webp">WebP · 保留透明</option><option value="jpeg">JPG · 白色背景</option></select></div><div class="field"><label for="collision">遇到同名文件</label><select id="collision"><option value="rename">自动加序号</option><option value="skip">跳过</option><option value="overwrite">覆盖目标文件</option></select></div></div>
+      <div class="two-fields"><div class="field"><label for="suffix">文件名后缀</label><input id="suffix" placeholder="如 _small" maxlength="60"></div><div id="quality-field" class="field" hidden><label for="quality">编码质量 <span>1–100</span></label><input id="quality" type="number" min="1" max="100" value="95"></div></div>
+      <label class="preserve-option"><input id="preserve" type="checkbox" checked>保留输入文件夹的子目录结构</label>
+      <div class="export-block"><div><strong id="export-count">准备导出 0 张</strong><span>原图保留，结果直接写入目标文件夹</span></div><button id="export" class="button primary" disabled>批量处理并导出 <span>↗</span></button><button id="cancel" class="button" hidden>停止剩余任务</button><progress id="progress" max="1" value="0" hidden></progress><span id="progress-label" role="status"></span><button id="open-output" class="text-button">打开输出文件夹 ↗</button></div>
+    </aside>
+  </main>
+  <section class="activity"><div><h2>处理记录</h2><button id="clear-log" class="text-button">清空记录</button></div><ul id="log" aria-live="polite"><li class="neutral">就绪。默认读取本项目的 ./input，未指定目录时导出到 ./output；相对路径以本项目目录为基准。</li></ul></section>
+  <footer>RESIZE STUDIO <span>尺寸缩放 ≠ 指定文件体积 · 不处理 GIF 动画与 TIFF · 处理失败的素材可查看记录</span></footer>
+  <dialog id="preview"><div class="dialog-top"><h2 id="preview-name">图片预览</h2><button id="close-preview" class="button" aria-label="关闭预览">×</button></div><div id="preview-content" class="preview-content"></div><p id="preview-note"></p></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
