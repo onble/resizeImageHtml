@@ -70,6 +70,8 @@ Worker 从本地 vendor 加载固定的单线程 codec，调用 optimise(bytes, 
 
 右上角 `theme-toggle` 在浅色/暗黑之间切换。theme.js 是在 CSS 前加载的独立脚本，先恢复 `resize-studio-theme`，再在 DOMContentLoaded 接上按钮；首次默认浅色。CSS 的 `:root[data-theme="dark"]` 覆盖颜色变量，表面统一使用 `--surface` / `--input-bg` 等变量，不能添加固定白色的背景。暗黑模式的蓝色文字用 `--primary`，蓝底白字主按钮用 `--action-bg`，避免提亮文字蓝色后导致主按钮白字对比度不足。主题切换不重建素材列表、不改变勾选或加工参数，也不改变 Canvas 图片输出。
 
+素材工具栏使用 `.library-action` 图标文字按钮，「全选可见」用 `.library-action-accent` 强调。SVG 使用 currentColor 随主题变化，aria-hidden 避免重复朗读；data-i18n 放在内部 span，切换语言保留图标。保持现有选择与清空导入事件，窄屏允许按钮换行。
+
 ## 中英文约定
 
 首次默认英文。页头 language-select 在 EN / 中文之间切换，localStorage 的 resize-studio-language 独立于主题和加工参数；文档默认 README.md 英文，README.zh-CN.md 中文。i18n.js 在 theme.js 和样式之前加载，提供 window.ResizeI18n 的 t / getLanguage / setLanguage / errorText。静态纯文本用 data-i18n，placeholder / aria-label 用 data-i18n-placeholder / data-i18n-aria；有 input、图标等子元素的标签应只翻译内部 span，避免 textContent 清除控件。

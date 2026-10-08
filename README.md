@@ -35,6 +35,8 @@ This runs the server in the foreground; closing the terminal stops it. Open the 
 3. Choose a mode and set its dimensions or percentage. Search filters the list; **Select visible** selects the filtered assets, while **Deselect all** clears all selections.
 4. Choose a destination and click **Resize & export**. Use **Open output folder** to view the results. Stopping a batch leaves completed files in place.
 
+The asset toolbar uses labeled icon buttons for **Select visible**, **Deselect all**, and **Clear imports**. Clear imports removes imported assets from the list only; original files stay on disk.
+
 Switching language preserves your selections, filenames, folder paths, and resize settings. Buttons, descriptions, status messages, previews, and activity entries follow the selected language.
 
 ## Resize modes
