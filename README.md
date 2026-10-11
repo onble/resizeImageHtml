@@ -4,11 +4,15 @@ A local image workbench for fast, repeatable batch resizing. Drop your assets, c
 
 [简体中文](README.zh-CN.md)
 
+For a blocky pixelation filter, use the separate [Pixel Studio project](pixelImage/README.md) and its own `pixelImage/start.cmd` (port 4180). It has independent settings and folders; this Resize Studio continues to use LANCZOS.
+
 ## Quick start
 
-On Windows, double-click **start.cmd**. The service runs in the background and opens `http://127.0.0.1:4178` in your default browser. Starting it again opens the existing session. Double-click **停止工具.cmd** to stop the service.
+On Windows, double-click **start.cmd**. The service runs in the background and opens `http://127.0.0.1:4178` in your default browser. Starting it again reuses a service only when its protocol and build match the current files. An older service is restarted only after its recorded PID, exact project command line, and listening port have been verified. An unverified port owner is left running with an explanatory error. Double-click **停止工具.cmd** to stop the service.
 
-Requires **Node.js 20 or later**. No npm installation, build step, or Python environment is required. The PNG optimizer is bundled locally with its license notices; you do not need to run `npm install`.
+Requires **Node.js 20 or later** and **Python 3.10 or later with Pillow**. No npm installation or build step is required. Startup checks the image-processing runtime and processes a built-in small PNG through Python before reporting the service ready. The server repeats this check before listening, including when launched with `npm start`. These checks do not write to your input/output folders or install dependencies.
+
+An explicit `RESIZE_IMAGE_PYTHON` selects the Python executable. Otherwise discovery checks the project's `.venv`, then `py -3`, `python3`, and `python`, with the bundled Codex runtime as a fallback. To check the selected runtime, protocol, and build without starting the service, run `node image-processor.mjs --check`.
 
 ```sh
 npm start
@@ -20,13 +24,13 @@ This runs the server in the foreground; closing the terminal stops it. Open the 
 
 - **Batch input:** drop multiple images or entire folders, or use the file and folder pickers.
 - **Five resize modes:** proportional height, proportional width, exact dimensions, percentage, and bounded fit.
-- **Before-and-after previews:** compare output dimensions, transparency, and encoded quality.
+- **Before-and-after previews:** inspect the result at 1:1 by default, or fit it into the preview area; compare dimensions, transparency, and actual sampling settings.
 - **Folder watching:** discover new images every three seconds, select them automatically, and show them first.
 - **Direct export:** write to your chosen destination with optional subfolders, filename suffixes, and collision handling.
 - **Lossless PNG optimization:** enabled by default, with per-file and batch savings shown in Activity; keep the original encoding when optimization is not useful or unavailable.
 - **English / 中文:** switch from the header. English is the default; your choice is remembered in this browser.
 - **Light / dark mode:** a blue accent with neutral work surfaces; the theme is remembered independently of language.
-- **Local processing:** Canvas handles the images in your browser; Node.js handles local filesystem access. No cloud uploads.
+- **Local processing:** Python/Pillow resizes and encodes images on your computer, using the copied original tool's LANCZOS processing. Node.js handles local APIs and safe filesystem access. No cloud uploads.
 
 ## Everyday workflow
 
@@ -38,6 +42,8 @@ This runs the server in the foreground; closing the terminal stops it. Open the 
 The asset toolbar uses labeled icon buttons for **Select visible**, **Deselect all**, and **Clear imports**. Clear imports removes imported assets from the list only; original files stay on disk.
 
 Switching language preserves your selections, filenames, folder paths, and resize settings. Buttons, descriptions, status messages, previews, and activity entries follow the selected language.
+
+**Restore defaults** explicitly selects proportional height 120, PNG, LANCZOS, PNG optimization on, and palette conversion off. The removed nearest-neighbor preference is deleted from saved browser settings; all other saved preferences are preserved. Preview and Activity show the sampling method actually returned by the backend, so comparisons can use the same source, dimensions, and settings.
 
 ## Resize modes
 
@@ -51,19 +57,25 @@ Switching language preserves your selections, filenames, folder paths, and resiz
 | By percentage | 50% halves both dimensions; 80% scales them to 0.8×. |
 | Fit within bounds | Fit proportionally within maximum dimensions and export the actual size without padding. |
 
-Upscaling is disabled by default; enable **Allow upscaling** when needed. Use **Pixel art / nearest neighbor** for crisp pixel assets. Other images use the browser's high-quality smoothing. This differs from Pillow LANCZOS; compare the preview when visual fidelity matters. Proportional dimension rounding matches Python's rounding at `.5` for compatibility with the original tool.
+Upscaling is disabled by default; enable **Allow upscaling** when needed. All resize modes, thumbnails, previews, and exports use Pillow LANCZOS. The nearest-neighbor control has been removed, and the backend ignores `nearest` in older requests. The original resize script is bundled byte for byte as `python/resize_image.py` and verified against the SHA-256 recorded in `python/resize-source.json`; no external project folder is required. Its original `--nearest` definition remains intact, but the workbench never enables it. Default PNG processing for proportional height and square stretch calls its original `resize_png` entry point directly. Width, percentage, bounds, pad, crop, and non-square stretch are workbench adaptations in Python, not additional modes supplied by the original CLI. Other proportional results can also use the original entry point when their dimensions match its rules.
+
+The browser handles interaction and display. Dimension plans, output naming, thumbnails, previews, and exports are handled by the local backend; no Canvas processing or frontend dimension algorithm remains. Proportional rounding follows Python's `.5` behavior. Existing tools and their files are left untouched.
+
+Reducing pixel dimensions still removes detail. A thin outline can become less than one pixel at a very small target size. PNG optimization only reduces encoded bytes; it cannot restore detail lost during resizing.
 
 ## Lossless PNG optimization
 
 When PNG is selected, **Optimize PNG losslessly** is checked by default. You can turn it off; the choice is remembered with your resize settings. The option is hidden for JPG/WebP and does not affect those formats.
 
-After resizing and PNG encoding, the bundled OxiPNG codec optimizes the bytes in a Web Worker. It uses level 2, does not quantize colors, and does not rewrite RGB beneath transparent pixels. Only a strictly smaller PNG with matching dimensions is accepted. An unavailable worker, codec failure, or 30-second timeout falls back to the baseline PNG so export can continue.
+The original resize entry point writes PNG with `optimize=True, compress_level=9`. Its encoded bytes are retained even when a baseline PNG would be no larger, ensuring the original result is not silently replaced by a different encoding. Activity identifies this case as original encoding with zero savings. Python-only adaptations use the same Pillow settings and accept a smaller candidate. Failed processing/optimization or the 30-second optimization timeout falls back to baseline PNG processing where available.
+
+**256-color PNG palette · Lossy** is a separate optional switch matching the original script's `--palette`, off by default. It can change colors and transparency. Lossless PNG optimization only describes encoding after resizing and any requested palette conversion; it does not make resizing or palette conversion lossless.
 
 Preview uses the same optimization path and shows the final encoded file size. Activity reports each file's before/after sizes and savings, plus total savings for files actually written in the batch. Skipped and failed exports do not count toward saved bytes.
 
-A batch reuses its worker. Stop cancels an active optimization and avoids writing a not-yet-exported image; files already saved remain in place. Closing a preview cancels its optimization. Optimization reduces file bytes; resizing itself still changes pixel information.
+A batch processes one image at a time. Stop cancels the active request and avoids writing a not-yet-exported image; files already saved remain in place. Closing a preview cancels its processing request. Optimization reduces file bytes; resizing itself still changes pixel information.
 
-Bundled files and licenses: [OxiPNG notice](public/vendor/oxipng/NOTICE.md).
+The previous OxiPNG files and [license notices](public/vendor/oxipng/NOTICE.md) are retained in the repository, but are no longer executed or served by the application.
 
 ## Folder watching and ordering
 
@@ -77,7 +89,7 @@ Dropping a folder imports a snapshot. To keep it synchronized, load it as the as
 
 - Default input: `./input`. Default output: `./output`. Relative paths resolve against this project's folder, regardless of the launch directory, so the project can be moved as a whole.
 - Your explicit destination takes priority. An empty destination restores `./output`; missing folders are created automatically. Existing output folders are never cleared.
-- The original Python tool at `D:\project\cmzn\tools\resizeImage` and its input/output remain separate and preserved.
+- Existing Python tools and their input/output remain separate and preserved.
 - Input/output paths and watching preferences are stored in `settings.json`. Resize settings, theme, and language are stored in browser localStorage.
 - Subfolder structure is preserved by default. Dropped/imported folders include their top-level folder name; watched assets use the selected folder as their root. Disable the option for flat output.
 - Existing files receive `_1`, `_2`, etc. by default. You may choose **Skip** or explicitly choose **Overwrite destination**.
@@ -86,11 +98,11 @@ Dropping a folder imports a snapshot. To keep it synchronized, load it as the as
 
 The service listens only on `127.0.0.1`, checks Host/Origin and request tokens, and validates paths and symbolic links. Batches process one image at a time. Limits: 80 MB per exported file, 16384 px per side, and approximately 32 million output pixels.
 
-“Size” refers to pixel dimensions, not a target KB/MB file size. Animated GIF, TIFF, Excel size mappings, and indexed 256-color PNG output are not currently supported.
+“Size” refers to pixel dimensions, not a target KB/MB file size. Animated GIF, TIFF, and Excel size mappings are not currently supported.
 
 ## Development and AI-assisted changes
 
-The project uses native HTML, CSS, ES modules, and Node.js built-in modules.
+The project uses native HTML, CSS, ES modules, Node.js built-in modules, and Python/Pillow. The browser displays images and uploads originals to the local service; it does not resize or encode output images with Canvas.
 
 | File | Responsibility |
 | --- | --- |
@@ -100,13 +112,16 @@ The project uses native HTML, CSS, ES modules, and Node.js built-in modules.
 | `public/theme.js` | Theme restoration before the stylesheet and the header toggle. |
 | `public/app.js` | Imports, selections, watching, previews, exports, and translated activity. |
 | `public/library.mjs` | Asset reconciliation and ordering. |
-| `public/resize.mjs` | Geometry, Canvas rendering, encoding, and output naming. |
-| `public/png-optimizer.mjs` / `public/png-worker.mjs` | Reusable worker sessions, lossless PNG optimization, timeouts, cancellation, and fallback. |
-| `public/vendor/oxipng/` | Local JS/WASM codec and third-party notices. |
-| `server.mjs` | Local filesystem APIs and static serving. |
+| `public/resize.mjs` | Interface mode registry only. |
+| `image-processor.mjs` | Python discovery, protocol/build checks, backend plans, and processing requests. |
+| `python/resize_image.py` / `python/resize-source.json` | Byte-for-byte original script and its SHA-256 verification record. |
+| `python/process_image.py` | Direct calls to the original resize function, Python mode adaptations, planning/naming, PNG/JPEG/WebP encoding, and fallback. |
+| `public/vendor/oxipng/` | Retained legacy codec files and third-party notices; not served or executed. |
+| `server.mjs` | Local image-processing/filesystem APIs and static serving. |
 | `tests/core.test.mjs` | Resize, filesystem, and HTTP checks. |
 | `tests/localization.test.mjs` | Language persistence, translation coverage, theme labels, and application state checks using a DOM stub. |
-| `tests/png-optimizer.test.mjs` | Real WASM round trips, RGBA preservation, fallback, worker reuse, timeout, and cancellation. |
+| `tests/backend.test.mjs` / `tests/python_image_test.py` | Real Python encoding, copied-tool pixel comparisons, transparency, PNG fallback, cancellation, and local API/export checks. |
+| `tests/image-fixtures.mjs` | Image fixtures and independent PNG decoding for backend verification. |
 
 For a future feature, start an AI conversation in this folder with a request such as:
 
@@ -120,9 +135,15 @@ See [AI_GUIDE.md](AI_GUIDE.md) for extension steps and [AGENTS.md](AGENTS.md) fo
 npm test
 ```
 
-Tests cover geometry, path constraints, folder scans, collision policies, source protection, local API access, and language behavior. Filesystem tests use temporary directories.
+Tests cover geometry, Python image processing, decoded pixels, path constraints, folder scans, collision policies, source protection, local API access, and language behavior. Filesystem tests use temporary directories. Browser verification should separately check previews, dimensions, transparency, exported files, and preservation of originals.
 
-Startup logs are in `.runtime/server.log` and `.runtime/server.error.log`. If port 4178 is occupied, choose another port:
+For the supplied `cardIcon.png` source, the original script's 150 × 150 LANCZOS/RGBA PNG and the workbench result were verified to have identical encoded bytes. A different appearance still requires checking the actual selected parameters and display scale; it is not evidence that the PNG algorithm differs. New comparisons should use the same original and settings, and inspect the result at 1:1.
+
+Startup logs are in `.runtime/server.log` and `.runtime/server.error.log`. If all thumbnails fail to fetch and refreshing no longer opens the page, run **start.cmd** again and inspect `.runtime/server.error.log` if startup fails. A page opening by itself is not a successful image-processing check.
+
+On Windows, Python discovery first starts a short-lived copy of the current Node executable to initialize child-process job handling. This avoids a known older-libuv failure involving Windows Store executable aliases (`AssignProcessToJobObject: (87)`; [upstream explanation](https://github.com/libuv/libuv/pull/4152)). It does not require upgrading the system Node installation or change the image-processing algorithm.
+
+If port 4178 is occupied, choose another port:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -Port 4179
@@ -130,4 +151,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\start.ps1 -Port 4179
 
 For network folders, ensure your Windows account can access them. Per-file failures appear in **Activity** and do not stop subsequent files in the batch.
 
-Technical references: [Canvas drawImage](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/drawImage), [Canvas smoothing quality](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/imageSmoothingQuality), [Node.js filesystem](https://nodejs.org/api/fs.html).
+Technical references: [Pillow Image](https://pillow.readthedocs.io/en/stable/reference/Image.html), [Pillow image formats](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html), [Node.js filesystem](https://nodejs.org/api/fs.html).

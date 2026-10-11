@@ -1,27 +1,27 @@
-import { MODES, geometry, outputName, renderImage } from './resize.mjs';
+import { MODES } from './resize.mjs';
 import { compareAssets, reconcileLibrary } from './library.mjs';
-import { createPngOptimizer } from './png-optimizer.mjs';
 
 const { t, errorText, getLanguage } = window.ResizeI18n;
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="resize-token"]').content;
 const supported = /\.(png|jpe?g|webp|bmp)$/i;
-const state = { mode: 'height', items: new Map(), config: null, libraryRoot: null, busy: false, scanning: false, importing: false, cancelled: false, thumbnailQueue: [], thumbnailWorkers: 0 };
-let toastTimer, lastToast, lastProgress, previewController, exportController;
+const state = { mode: 'height', items: new Map(), config: null, engine: null, engineError: '', libraryRoot: null, busy: false, scanning: false, importing: false, cancelled: false, thumbnailQueue: [], thumbnailWorkers: 0 };
+const protocol = '2';
+let toastTimer, lastToast, lastProgress, previewController, exportController, previewPresentation;
+let previewUrls = [];
+let planTimer, planController, planGeneration = 0, planRequestKey = '';
+let savedPreferences = {};
 const bytes = value => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
 const element = (tag, className, value) => { const node = document.createElement(tag); if (className) node.className = className; if (value !== undefined) node.textContent = value; return node; };
 
 function optimizationText(result) {
   if (result.status === 'optimized') return t('png.optimized', { before: bytes(result.originalBytes), after: bytes(result.optimizedBytes), saved: bytes(result.savedBytes), percent: (100 * result.savedBytes / result.originalBytes).toFixed(1) });
   if (result.status === 'unchanged') return t('png.unchanged');
+  if (result.status === 'original') return t('png.original');
   return t(result.status === 'timed-out' ? 'png.timedOut' : 'png.failed');
 }
-function messageText({ key, params }) { return t(key, { ...params, ...(params.error !== undefined ? { error: errorText(params.error) } : {}), ...(params.optimization ? { detail: optimizationText(params.optimization) } : {}) }); }
-async function optimizeOutput(rendered, settings, format, optimizer, signal) {
-  if (format !== 'png' || !settings.pngOptimize) return rendered;
-  const optimization = await optimizer.optimize(rendered.blob, { signal });
-  return { ...rendered, blob: optimization.blob, optimization };
-}
+function processingText(processing) { return t('processing.detail', { resample: processing.resample, palette: t(processing.palette ? 'processing.palette' : 'processing.rgba') }); }
+function messageText({ key, params }) { return t(key, { ...params, ...(params.error !== undefined ? { error: errorText(params.error) } : {}), ...(params.optimization ? { detail: optimizationText(params.optimization) } : {}), ...(params.processing ? { detail: processingText(params.processing) } : {}) }); }
 function renderLog(row) {
   row.textContent = row.message.at.toLocaleTimeString(getLanguage() === 'zh' ? 'zh-CN' : 'en-GB', { hour12: false }) + '  ' + messageText(row.message);
 }
@@ -34,14 +34,41 @@ function toast(key, params = {}) { lastToast = { key, params }; $('toast').textC
 function errorReport(error) { log('log.error', 'error', { error: error.message }); toast('log.error', { error: error.message }); }
 function progressMessage(key, params = {}) { lastProgress = { key, params }; $('progress-label').textContent = messageText(lastProgress); }
 function on(id, event, action) { $(id).addEventListener(event, e => { Promise.resolve().then(() => action(e)).catch(errorReport); }); }
-async function api(route, { method = 'GET', body, raw = false } = {}) {
-  const response = await fetch(`/api/${route}`, { method, headers: { 'X-Resize-Token': token, ...(body && !raw ? { 'Content-Type': 'application/json' } : {}) }, body: body === undefined ? undefined : raw ? body : JSON.stringify(body) });
-  if (!response.ok) { const data = await response.json().catch(() => ({})); throw new Error(data.error || `请求失败 (${response.status})`); }
+async function api(route, { method = 'GET', body, raw = false, signal } = {}) {
+  const processing = route === 'plan' || route.startsWith('preview?') || route.startsWith('export?');
+  if (processing) requireEngine();
+  const response = await fetch(`/api/${route}`, { method, headers: { 'X-Resize-Token': token, ...(processing ? { 'X-Resize-Protocol': protocol } : {}), ...(body && !raw ? { 'Content-Type': 'application/json' } : {}) }, body: body === undefined ? undefined : raw ? body : JSON.stringify(body), signal });
+  if (processing && response.headers.get('X-Resize-Protocol') !== protocol) throw incompatibleEngine();
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    if (processing && response.status === 409) throw incompatibleEngine();
+    throw Object.assign(new Error(data.error || `请求失败 (${response.status})`), { status: response.status });
+  }
+  if (route.startsWith('preview?')) {
+    let metadata;
+    try { metadata = JSON.parse(response.headers.get('X-Resize-Result')); } catch {}
+    if (!metadata?.layout?.width || !metadata?.layout?.height || !metadata?.original?.width || !metadata?.original?.height) throw new Error('Invalid image processing response.');
+    return { ...metadata, blob: await response.blob() };
+  }
   return route.startsWith('image?') ? response.blob() : response.json();
+}
+function incompatibleEngine() {
+  state.engine = null;
+  state.engineError = 'The image processing service is incompatible. Restart Resize Studio and reload this page.';
+  updateCounts(); updateEngineHint();
+  return new Error(state.engineError);
+}
+function requireEngine() { if (state.engine?.protocol !== Number(protocol) || state.engine.engine !== 'pillow') throw incompatibleEngine(); }
+function updateEngineHint() {
+  $('engine-hint').textContent = state.engineError ? errorText(state.engineError) : state.engine ? t('resize.engine') : t('engine.checking');
+  $('engine-hint').classList.toggle('error', Boolean(state.engineError));
+}
+function processPreview(blob, settings, format, signal) {
+  return api(`preview?options=${encodeURIComponent(JSON.stringify({ ...settings, format }))}`, { method: 'POST', body: blob, raw: true, signal });
 }
 
 function options() {
-  return { mode: state.mode, width: Number($('width').value), height: Number($('height').value), percent: Number($('percent').value), fit: $('fit').value, nearest: $('nearest').checked, allowUpscale: $('allow-upscale').checked, quality: Number($('quality').value) / 100, pngOptimize: $('png-optimize').checked };
+  return { mode: state.mode, width: Number($('width').value), height: Number($('height').value), percent: Number($('percent').value), fit: $('fit').value, allowUpscale: $('allow-upscale').checked, quality: Number($('quality').value) / 100, pngOptimize: $('png-optimize').checked, palette: $('palette').checked };
 }
 function selectedItems() { return [...state.items.values()].filter(item => item.selected); }
 function visibleItems() {
@@ -53,7 +80,7 @@ function updateCounts() {
   $('library-count').textContent = t('assets.count', { count: state.items.size });
   $('selection-count').textContent = t('assets.selection', { count, visible: visibleItems().length });
   $('export-count').textContent = t('assets.exportCount', { count });
-  $('export').disabled = state.busy || state.importing || count === 0 || !state.config;
+  $('export').disabled = state.busy || state.importing || count === 0 || !state.config || !state.engine;
   $('empty').hidden = visibleItems().length > 0;
 }
 function updateCard(item, card) {
@@ -64,8 +91,10 @@ function updateCard(item, card) {
   target.classList.remove('error');
   if (item.error) { target.textContent = errorText(item.error); target.classList.add('error'); }
   else if (item.width) {
-    try { const size = geometry(item.width, item.height, options()); target.textContent = `→ ${size.width} × ${size.height} px`; }
-    catch (error) { target.textContent = errorText(error); target.classList.add('error'); }
+    const plan = item.targetPlan?.settingsKey === JSON.stringify({ ...options(), format: $('format').value }) ? item.targetPlan : null;
+    if (plan?.error) { target.textContent = errorText(plan.error); target.classList.add('error'); }
+    else if (plan?.layout) target.textContent = `→ ${plan.layout.width} × ${plan.layout.height} px`;
+    else target.textContent = state.engineError ? errorText(state.engineError) : t('assets.planning');
   } else target.textContent = t('assets.reading');
   card.querySelector('.card-size').textContent = item.width ? `${item.width} × ${item.height} · ${bytes(item.size)}` : bytes(item.size);
   const thumb = card.querySelector('.thumb-button');
@@ -83,7 +112,45 @@ function renderLibrary() {
   $('library').replaceChildren(fragment); updateCounts();
 }
 function repaintItem(item) { for (const card of $('library').children) if (card.dataset.id === item.id) updateCard(item, card); }
-function updateTargets() { for (const card of $('library').children) { const item = state.items.get(card.dataset.id); if (item) updateCard(item, card); } }
+function updateTargets() {
+  updateEngineHint();
+  for (const card of $('library').children) { const item = state.items.get(card.dataset.id); if (item) updateCard(item, card); }
+  queueTargetPlans();
+}
+function cancelTargetPlans() { clearTimeout(planTimer); planController?.abort(); planGeneration++; planRequestKey = ''; }
+function queueTargetPlans() {
+  if (!state.engine || state.busy) return;
+  const settings = { ...options(), format: $('format').value }, settingsKey = JSON.stringify(settings);
+  const images = [...state.items.values()].filter(item => item.width && item.height).map(({ id, width, height }) => ({ id, width, height }));
+  const requestKey = JSON.stringify({ settings, images });
+  if (requestKey === planRequestKey) return;
+  cancelTargetPlans(); planRequestKey = requestKey;
+  if (!images.length) return;
+  const generation = planGeneration;
+  planTimer = setTimeout(() => {
+    const controller = new AbortController(); planController = controller;
+    requestTargetPlans(images, settings, settingsKey, generation, controller).catch(errorReport);
+  }, 150);
+}
+async function requestTargetPlans(images, settings, settingsKey, generation, controller) {
+  try {
+    const result = await api('plan', { method: 'POST', body: { images, options: settings }, signal: controller.signal });
+    if (generation !== planGeneration || controller.signal.aborted) return;
+    if (!Array.isArray(result.items)) throw new Error('Invalid image processing response.');
+    for (const planned of result.items) {
+      const item = state.items.get(planned.id);
+      if (!item) continue;
+      item.targetPlan = { settingsKey, layout: planned.layout, error: planned.error };
+      repaintItem(item);
+    }
+  } catch (error) {
+    if (generation !== planGeneration || controller.signal.aborted) return;
+    for (const { id } of images) {
+      const item = state.items.get(id);
+      if (item) { item.targetPlan = { settingsKey, error: error.message }; repaintItem(item); }
+    }
+  } finally { if (planController === controller) planController = null; }
+}
 
 function setMode(mode) {
   state.mode = mode;
@@ -105,55 +172,59 @@ function setMode(mode) {
   }));
   updateTargets(); remember();
 }
-const preferenceIds = ['height', 'width', 'percent', 'fit', 'allow-upscale', 'nearest', 'format', 'collision', 'suffix', 'preserve', 'quality', 'png-optimize'];
+const preferenceIds = ['height', 'width', 'percent', 'fit', 'allow-upscale', 'format', 'collision', 'suffix', 'preserve', 'quality', 'png-optimize', 'palette'];
 function remember() {
-  const values = { mode: state.mode };
+  const values = { ...savedPreferences, mode: state.mode };
   for (const id of preferenceIds) values[id] = $(id).type === 'checkbox' ? $(id).checked : $(id).value;
   try { localStorage.setItem('resize-studio-options', JSON.stringify(values)); } catch {}
 }
-function formatChanged() { $('quality-field').hidden = $('format').value === 'png'; $('png-optimize-field').hidden = $('format').value !== 'png'; remember(); }
+function formatChanged() { $('quality-field').hidden = $('format').value === 'png'; $('png-optimize-field').hidden = $('format').value !== 'png'; $('palette-field').hidden = $('format').value !== 'png'; remember(); }
+function resetDefaults() {
+  const defaults = state.engine?.defaults || {};
+  $('height').value = defaults.height ?? 120; $('width').value = defaults.width ?? 120;
+  $('percent').value = 100; $('fit').value = 'stretch'; $('format').value = 'png'; $('quality').value = 95;
+  $('png-optimize').checked = defaults.pngOptimize ?? true;
+  $('palette').checked = defaults.palette ?? false; $('allow-upscale').checked = defaults.allowUpscale ?? false;
+  setMode(defaults.mode || 'height'); formatChanged(); toast('toast.defaults');
+}
 function setBusy(busy) {
   state.busy = busy; $('language-select').disabled = busy;
   for (const node of document.querySelectorAll('main button, main input, main select, .image-card input')) node.disabled = busy;
   $('cancel').hidden = !busy; $('cancel').disabled = false; $('cancel').textContent = t('export.cancel'); $('progress').hidden = !busy; updateCounts();
+  if (busy) cancelTargetPlans(); else { runThumbnailQueue(); queueTargetPlans(); }
 }
 
-async function loadSource(item) {
-  const blob = item.source === 'local' ? await api(`image?path=${encodeURIComponent(item.relativePath)}&mtime=${item.modified}`) : item.file;
-  const url = URL.createObjectURL(blob); const image = new Image(); image.src = url;
-  try { await image.decode(); } catch { URL.revokeObjectURL(url); throw new Error('图片无法解码，可能已损坏或格式不支持'); }
-  return { image, dispose: () => { image.src = ''; URL.revokeObjectURL(url); } };
+async function loadSource(item, signal) {
+  return item.source === 'local' ? api(`image?path=${encodeURIComponent(item.relativePath)}&mtime=${item.modified}`, { signal }) : item.file;
 }
 function queueThumbnail(item) {
   state.thumbnailQueue.push(item);
   runThumbnailQueue();
 }
 function runThumbnailQueue() {
-  while (state.thumbnailWorkers < 3 && state.thumbnailQueue.length) {
+  while (!state.busy && state.thumbnailWorkers < 3 && state.thumbnailQueue.length) {
     const item = state.thumbnailQueue.shift();
     if (state.items.get(item.id) !== item) continue;
     state.thumbnailWorkers++;
     makeThumbnail(item).catch(error => {
-      if (state.items.get(item.id) !== item) return;
+      if (state.items.get(item.id) !== item || error.name === 'AbortError') return;
       item.error = error.message; log('log.fileError', 'error', { name: item.relativePath, error: error.message }); repaintItem(item);
     }).finally(() => { state.thumbnailWorkers--; runThumbnailQueue(); });
   }
 }
 async function makeThumbnail(item) {
-  const source = await loadSource(item);
+  const controller = new AbortController(); item.thumbnailController = controller;
   try {
+    const source = await loadSource(item, controller.signal);
     if (state.items.get(item.id) !== item) return;
-    item.width = source.image.naturalWidth; item.height = source.image.naturalHeight;
-    const scale = Math.min(1, 220 / item.width, 160 / item.height);
-    const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(item.width * scale)); canvas.height = Math.max(1, Math.round(item.height * scale));
-    canvas.getContext('2d').drawImage(source.image, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise(resolve => canvas.toBlob(resolve));
+    const rendered = await processPreview(source, { mode: 'fit', width: 220, height: 160, allowUpscale: false, pngOptimize: false }, 'png', controller.signal);
     if (state.items.get(item.id) !== item) return;
-    if (blob) item.thumbnail = URL.createObjectURL(blob);
-    repaintItem(item);
-  } finally { source.dispose(); }
+    item.width = rendered.original.width; item.height = rendered.original.height;
+    item.thumbnail = URL.createObjectURL(rendered.blob);
+    repaintItem(item); queueTargetPlans();
+  } finally { if (item.thumbnailController === controller) delete item.thumbnailController; }
 }
-function removeItem(item) { if (item.thumbnail) URL.revokeObjectURL(item.thumbnail); state.items.delete(item.id); }
+function removeItem(item) { item.thumbnailController?.abort(); if (item.thumbnail) URL.revokeObjectURL(item.thumbnail); state.items.delete(item.id); queueTargetPlans(); }
 
 async function refreshLibrary(manual = false) {
   if (!state.config || state.scanning || state.busy || state.importing) return;
@@ -224,45 +295,61 @@ async function collectEntry(entry, base = '') {
   return result;
 }
 
+function clearPreview() {
+  for (const url of previewUrls) URL.revokeObjectURL(url);
+  previewUrls = []; previewPresentation = null;
+}
+function updatePreviewLabels() {
+  if (!previewPresentation) return;
+  const { originalTitle, resultTitle, originalImage, resultImage, optimization, processing } = previewPresentation;
+  originalTitle.textContent = t('preview.original'); resultTitle.textContent = t('preview.result');
+  originalImage.alt = t('preview.original'); resultImage.alt = t('preview.alt');
+  $('preview-note').textContent = t($('preview-scale').value === 'actual' ? 'preview.actualNote' : 'preview.note') + (processing ? ' ' + processingText(processing) : '') + (optimization ? ' ' + optimizationText(optimization) : '');
+}
+function applyPreviewScale() {
+  previewPresentation?.resultContainer.classList.toggle('actual-size', $('preview-scale').value === 'actual');
+  updatePreviewLabels();
+}
 async function preview(item) {
   if (state.busy) return;
+  requireEngine();
   previewController?.abort();
+  clearPreview();
   const controller = new AbortController(); previewController = controller;
-  const optimizer = createPngOptimizer(); const settings = options(), format = $('format').value;
+  const settings = options(), format = $('format').value;
   $('preview-name').removeAttribute('data-i18n'); $('preview-name').textContent = item.relativePath; $('preview-content').replaceChildren(); $('preview-note').textContent = t('preview.preparing');
   if (!$('preview').open) $('preview').showModal();
-  let source;
+  const urls = [];
   try {
-    source = await loadSource(item);
+    const source = await loadSource(item, controller.signal);
     if (controller.signal.aborted) return;
-    const rendered = await optimizeOutput(await renderImage(source.image, settings, format), settings, format, optimizer, controller.signal);
+    const rendered = await processPreview(source, settings, format, controller.signal);
     if (controller.signal.aborted || !$('preview').open) return;
-    const original = element('div', 'preview-box'); original.append(element('h3', '', t('preview.original')));
+    const original = element('div', 'preview-box'), originalTitle = element('h3'); original.append(originalTitle);
     const originalContainer = element('div', 'preview-image');
-    const originalThumb = document.createElement('canvas'); const ratio = Math.min(1, 700 / source.image.naturalWidth, 700 / source.image.naturalHeight); originalThumb.width = Math.max(1, Math.round(source.image.naturalWidth * ratio)); originalThumb.height = Math.max(1, Math.round(source.image.naturalHeight * ratio)); originalThumb.getContext('2d').drawImage(source.image, 0, 0, originalThumb.width, originalThumb.height); originalContainer.append(originalThumb);
-    original.append(originalContainer, element('p', '', `${source.image.naturalWidth} × ${source.image.naturalHeight} px · ${bytes(item.size)}`));
-    const result = element('div', 'preview-box'); result.append(element('h3', '', t('preview.result')));
+    const originalImage = element('img'); originalImage.src = URL.createObjectURL(source); urls.push(originalImage.src); originalContainer.append(originalImage);
+    original.append(originalContainer, element('p', '', `${rendered.original.width} × ${rendered.original.height} px · ${bytes(item.size)}`));
+    const result = element('div', 'preview-box'), resultTitle = element('h3'); result.append(resultTitle);
     const resultContainer = element('div', 'preview-image');
-    // Preview the final encoded output, including PNG optimization.
-    const url = URL.createObjectURL(rendered.blob); const resultImage = element('img'); resultImage.src = url; resultImage.alt = t('preview.alt');
-    try { await resultImage.decode(); } finally { URL.revokeObjectURL(url); }
+    // Display the original bytes and the final Python-encoded result directly.
+    const resultImage = element('img'); resultImage.src = URL.createObjectURL(rendered.blob); urls.push(resultImage.src);
+    await Promise.all([originalImage.decode(), resultImage.decode()]);
     if (controller.signal.aborted || !$('preview').open) return;
     resultContainer.append(resultImage);
     result.append(resultContainer, element('p', '', `${rendered.layout.width} × ${rendered.layout.height} px · ${bytes(rendered.blob.size)}`));
-    $('preview-content').replaceChildren(original, result); $('preview-note').textContent = t('preview.note') + (rendered.optimization ? ' ' + optimizationText(rendered.optimization) : '');
+    previewUrls = urls.splice(0);
+    previewPresentation = { originalTitle, resultTitle, originalImage, resultImage, resultContainer, optimization: rendered.optimization, processing: rendered.processing };
+    $('preview-content').replaceChildren(original, result); applyPreviewScale();
   } catch (error) { if (!controller.signal.aborted) $('preview-note').textContent = errorText(error); }
-  finally { optimizer.dispose(); source?.dispose(); if (previewController === controller) previewController = null; }
+  finally { for (const url of urls) URL.revokeObjectURL(url); if (previewController === controller) previewController = null; }
 }
 
 async function exportSelected() {
   const items = selectedItems(); if (!items.length || state.busy) return;
+  requireEngine();
   const settings = options(); const format = $('format').value;
   const suffix = $('suffix').value; const preserve = $('preserve').checked; const collision = $('collision').value;
-  if (/[<>:"/\\|?*\x00-\x1f]/.test(suffix)) throw new Error('文件名后缀不能包含路径或特殊字符');
-  if (!['png', 'jpeg', 'webp'].includes(format)) throw new Error('不支持的导出格式');
-  if (format !== 'png' && (!Number.isFinite(settings.quality) || settings.quality < 0.01 || settings.quality > 1)) throw new Error('编码质量必须为 1–100');
   const controller = new AbortController(); exportController = controller;
-  const optimizer = createPngOptimizer();
   state.cancelled = false; setBusy(true); let saved = 0, skipped = 0, failed = 0, attempted = 0, savedBytes = 0;
   $('progress').max = items.length; $('progress').value = 0; progressMessage('export.preparing');
   try {
@@ -270,38 +357,39 @@ async function exportSelected() {
     await saveConfig();
     log('log.exportStart', 'neutral', { count: items.length, path: state.config.output });
     for (const item of items) {
-      if (state.cancelled) break;
-      attempted++; let source;
+      if (state.cancelled || !state.engine) break;
+      attempted++;
       $('progress-label').textContent = `${attempted} / ${items.length} · ${item.relativePath}`;
       try {
-        source = await loadSource(item);
-        const baseline = await renderImage(source.image, settings, format);
-        if (format === 'png' && settings.pngOptimize) progressMessage('png.processing', { position: attempted, total: items.length, name: item.relativePath });
-        const rendered = await optimizeOutput(baseline, settings, format, optimizer, controller.signal);
+        const source = await loadSource(item, controller.signal);
         if (state.cancelled) { attempted--; break; }
-        const name = outputName(item.relativePath, format, suffix, preserve);
-        const result = await api(`export?name=${encodeURIComponent(name)}&collision=${collision}`, { method: 'POST', body: rendered.blob, raw: true });
+        progressMessage('export.processing', { position: attempted, total: items.length, name: item.relativePath });
+        const result = await api(`export?sourceName=${encodeURIComponent(item.relativePath)}&suffix=${encodeURIComponent(suffix)}&preserve=${preserve}&collision=${encodeURIComponent(collision)}&options=${encodeURIComponent(JSON.stringify({ ...settings, format }))}`, { method: 'POST', body: source, raw: true, signal: controller.signal });
         if (result.status === 'skipped') { skipped++; log('log.skipped', 'neutral', { path: result.path }); }
         else {
-          saved++; log('log.saved', 'success', { width: rendered.layout.width, height: rendered.layout.height, size: bytes(result.size), path: result.path });
-          if (rendered.optimization) {
-            savedBytes += rendered.optimization.savedBytes;
+          if (!result.layout?.width || !result.layout?.height) throw new Error('Invalid image processing response.');
+          saved++; log('log.saved', 'success', { width: result.layout.width, height: result.layout.height, size: bytes(result.size), path: result.path });
+          if (result.processing) log('log.processing', 'neutral', { name: item.relativePath, processing: { engine: result.processing.engine, resample: result.processing.resample, palette: result.processing.palette } });
+          if (result.optimization) {
+            savedBytes += result.optimization.savedBytes;
             // Keep only numeric metadata in activity, never hold full image Blobs.
-            const { status, originalBytes, optimizedBytes, savedBytes: saving } = rendered.optimization;
+            const { status, originalBytes, optimizedBytes, savedBytes: saving } = result.optimization;
             log('log.png', status === 'optimized' ? 'success' : 'neutral', { name: item.relativePath, optimization: { status, originalBytes, optimizedBytes, savedBytes: saving } });
           }
         }
         item.error = ''; repaintItem(item);
-      } catch (error) { failed++; item.error = error.message; repaintItem(item); log('log.fileError', 'error', { name: item.relativePath, error: error.message }); }
-      finally { source?.dispose(); }
+      } catch (error) {
+        if (controller.signal.aborted) { attempted--; break; }
+        failed++; item.error = error.message; repaintItem(item); log('log.fileError', 'error', { name: item.relativePath, error: error.message });
+      }
       $('progress').value = attempted;
       await new Promise(resolve => setTimeout(resolve, 0));
     }
-    const key = state.cancelled ? 'export.stopped' : 'export.complete';
+    const key = state.cancelled || !state.engine ? 'export.stopped' : 'export.complete';
     const params = { saved, skipped, failed, remaining: items.length - attempted };
     progressMessage(key, params); log(key, failed ? 'error' : 'success', params); toast(key, params);
     if (format === 'png' && settings.pngOptimize) log('png.batch', 'neutral', { saved: bytes(savedBytes) });
-  } finally { optimizer.dispose(); exportController = null; setBusy(false); }
+  } finally { exportController = null; setBusy(false); }
 }
 
 for (const mode of MODES) {
@@ -311,12 +399,17 @@ for (const mode of MODES) {
 }
 try {
   const stored = JSON.parse(localStorage.getItem('resize-studio-options') || '{}');
-  for (const id of preferenceIds) if (stored[id] !== undefined) { if ($(id).type === 'checkbox') $(id).checked = stored[id]; else $(id).value = stored[id]; }
-  if (MODES.some(mode => mode.id === stored.mode)) state.mode = stored.mode;
+  if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    // The retired sampling toggle must not survive an upgrade; keep other settings.
+    delete stored.nearest; savedPreferences = stored;
+    for (const id of preferenceIds) if (stored[id] !== undefined) { if ($(id).type === 'checkbox') $(id).checked = stored[id]; else $(id).value = stored[id]; }
+    if (MODES.some(mode => mode.id === stored.mode)) state.mode = stored.mode;
+  }
 } catch {}
 setMode(state.mode); formatChanged(); updateCounts();
 for (const id of preferenceIds) on(id, 'input', () => { remember(); updateTargets(); if (id === 'format') formatChanged(); });
 on('search', 'input', renderLibrary);
+on('reset-defaults', 'click', resetDefaults);
 on('select-all', 'click', () => { for (const item of visibleItems()) item.selected = true; renderLibrary(); });
 on('select-none', 'click', () => { for (const item of state.items.values()) item.selected = false; renderLibrary(); });
 on('clear-imports', 'click', () => { for (const item of [...state.items.values()]) if (item.source === 'drop') removeItem(item); renderLibrary(); });
@@ -360,8 +453,9 @@ on('cancel', 'click', () => { state.cancelled = true; exportController?.abort();
 on('open-output', 'click', async () => { await saveConfig(); await api('open-output', { method: 'POST' }); });
 on('clear-log', 'click', () => $('log').replaceChildren());
 on('close-preview', 'click', () => $('preview').close());
-on('preview', 'close', () => previewController?.abort());
-window.addEventListener('beforeunload', () => { previewController?.abort(); exportController?.abort(); });
+on('preview-scale', 'change', applyPreviewScale);
+on('preview', 'close', () => { previewController?.abort(); clearPreview(); });
+window.addEventListener('beforeunload', () => { previewController?.abort(); exportController?.abort(); cancelTargetPlans(); clearPreview(); for (const item of state.items.values()) item.thumbnailController?.abort(); });
 on('preview', 'click', event => { if (event.target === $('preview')) { const rect = $('preview').getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) $('preview').close(); } });
 
 window.addEventListener('resize-language-change', () => {
@@ -369,7 +463,7 @@ window.addEventListener('resize-language-change', () => {
     button.querySelector('strong').textContent = t(`mode.${button.dataset.mode}.title`);
     button.querySelector('small').textContent = t(`mode.${button.dataset.mode}.description`);
   }
-  setMode(state.mode); renderLibrary();
+  $('mode-help').textContent = t(`mode.${state.mode}.help`); updateEngineHint(); renderLibrary();
   if (state.config) {
     $('output-hint').textContent = t('output.hint', { path: state.config.output });
     $('watch-label').textContent = t(state.config.watch ? 'watch.active' : 'watch.manual');
@@ -377,9 +471,20 @@ window.addEventListener('resize-language-change', () => {
   for (const row of $('log').children) if (row.message) renderLog(row);
   if (lastToast) $('toast').textContent = messageText(lastToast);
   if (lastProgress) $('progress-label').textContent = messageText(lastProgress);
+  updatePreviewLabels();
 });
 
 async function initialize() {
+  try {
+    const engine = await api('engine');
+    if (engine.protocol !== Number(protocol) || engine.engine !== 'pillow' || !engine.buildId || engine.upToDate === false) throw incompatibleEngine();
+    state.engine = engine; state.engineError = ''; updateEngineHint();
+  } catch (error) {
+    state.engine = null;
+    if (!state.engineError) state.engineError = error.status === 404 ? 'The image processing service is incompatible. Restart Resize Studio and reload this page.' : 'Cannot connect to the image processing service. Restart Resize Studio and reload this page.';
+    updateEngineHint(); updateCounts();
+    throw new Error(state.engineError);
+  }
   state.config = await api('config'); $('input-path').value = state.config.input; $('output-path').value = state.config.output; $('watch').checked = state.config.watch;
   $('output-hint').textContent = t('output.hint', { path: state.config.output });
   await refreshLibrary(true); updateCounts();

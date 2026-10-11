@@ -4,7 +4,7 @@
     'page.title': ['Resize Studio · Local Image Workbench', '图片缩放工作台 · Resize Studio'],
     'brand.title': ['Resize Studio', '图片缩放工作台'],
     'brand.subtitle': ['LOCAL IMAGE WORKBENCH', 'RESIZE STUDIO / 本地素材工具'],
-    'local': ['Local processing · No cloud uploads', '本地处理 · 图片无需上传'],
+    'local': ['Local Python processing · No cloud uploads', '本地 Python 处理 · 不上传云端'],
     'language': ['Interface language', '界面语言'],
     'theme.light': ['Light mode', '浅色模式'],
     'theme.dark': ['Dark mode', '暗黑模式'],
@@ -40,6 +40,7 @@
     'assets.select': ['Select {name}', '选择 {name}'],
     'assets.preview': ['Preview {name}', '预览 {name}'],
     'assets.reading': ['Reading dimensions…', '读取尺寸中…'],
+    'assets.planning': ['Calculating dimensions on the server…', '正在由后端计算尺寸…'],
     'assets.local': ['Asset folder', '素材目录'],
     'assets.imported': ['Dropped / imported', '拖入 / 手动导入'],
     'empty.title': ['Your workspace is ready', '素材区准备好了'],
@@ -69,7 +70,9 @@
     'fit.contain': ['Keep ratio + centered padding', '等比缩放 + 居中留白'],
     'fit.cover': ['Keep ratio + centered crop', '等比缩放 + 居中裁切'],
     'upscale': ['Allow upscaling', '允许放大'],
-    'nearest': ['Pixel art / nearest neighbor', '像素风 / 最近邻'],
+    'resize.engine': ['Python processing · LANCZOS', 'Python 处理 · LANCZOS'],
+    'resize.reset': ['Restore defaults', '恢复默认参数'],
+    'engine.checking': ['Checking local processing service…', '正在检查本地处理服务…'],
     'section.export': ['03 / EXPORT', '03 / 导出'],
     'export.title': ['Save to your asset folder', '保存到你的素材目录'],
     'field.output': ['Destination folder', '目标文件夹'],
@@ -88,8 +91,14 @@
     'field.quality': ['Encoding quality', '编码质量'],
     'preserve': ['Keep the input subfolder structure', '保留输入文件夹的子目录结构'],
     'png.option': ['Optimize PNG losslessly', 'PNG 无损优化'],
-    'png.hint': ['Keep pixels and transparency; use the optimized file only when smaller.', '不改变像素和透明通道；仅采用更小的优化结果。'],
-    'png.processing': ['Optimizing PNG · {position} / {total} · {name}', '正在无损优化 PNG · {position} / {total} · {name}'],
+    'png.hint': ['Optimize PNG encoding while preserving the processed pixels and transparency.', '优化 PNG 编码，保留处理后的像素和透明通道。'],
+    'png.original': ['PNG: kept the original encoding.', 'PNG：已保留原始编码结果。'],
+    'palette.option': ['256-color PNG palette · Lossy', '256 色 PNG 调色板 · 有损'],
+    'palette.hint': ['Optional 256-color output. Reduces colors and may change edge colors or transparency.', '可选的 256 色输出，会减少颜色，可能改变边缘颜色或透明度。'],
+    'processing.detail': ['Python · {resample} · {palette}', 'Python · {resample} · {palette}'],
+    'processing.palette': ['256-color palette', '256 色调色板'],
+    'processing.rgba': ['No palette conversion', '不转换调色板'],
+    'log.processing': ['{name}: {detail}', '{name}：{detail}'],
     'png.optimized': ['PNG: {before} → {after}; saved {saved} ({percent}%).', 'PNG：{before} → {after}，节省 {saved}（{percent}%）。'],
     'png.unchanged': ['PNG: optimization did not reduce size; kept the original encoding.', 'PNG：优化未减小体积，已保留基础 PNG。'],
     'png.failed': ['PNG optimization unavailable; kept the original encoding.', 'PNG 优化未完成，已保留基础 PNG。'],
@@ -101,6 +110,7 @@
     'export.cancel': ['Stop remaining tasks', '停止剩余任务'],
     'export.stopping': ['Stopping…', '正在停止…'],
     'export.preparing': ['Preparing export…', '准备导出…'],
+    'export.processing': ['Processing locally · {position} / {total} · {name}', '正在本地处理 · {position} / {total} · {name}'],
     'export.open': ['Open output folder ↗', '打开输出文件夹 ↗'],
     'activity.title': ['Activity', '处理记录'],
     'activity.clear': ['Clear activity', '清空记录'],
@@ -108,11 +118,15 @@
     'footer': ['Pixel dimensions, not a file-size target · No animated GIF or TIFF · See activity for failed assets', '尺寸缩放 ≠ 指定文件体积 · 不处理 GIF 动画与 TIFF · 处理失败的素材可查看记录'],
     'preview.title': ['Image preview', '图片预览'],
     'preview.close': ['Close preview', '关闭预览'],
-    'preview.preparing': ['Generating preview…', '正在生成预览…'],
+    'preview.preparing': ['Generating preview with local Python…', '正在通过本地 Python 生成预览…'],
     'preview.original': ['Original', '原图'],
     'preview.result': ['Resized', '处理后'],
     'preview.alt': ['Resized image preview', '处理后预览'],
-    'preview.note': ['Preview fits the window; labels show actual output dimensions. The checkerboard indicates transparency.', '预览自适应窗口大小，标注尺寸为实际输出尺寸。棋盘格代表透明区域。'],
+    'preview.scale': ['Result display', '处理后显示方式'],
+    'preview.actual': ['1:1 pixels', '1:1 像素'],
+    'preview.fit': ['Fit in window', '适应窗口'],
+    'preview.actualNote': ['Result shown at 1:1: one image pixel per CSS pixel. Scroll to inspect large results, or choose Fit in window. The original fits the window; checkerboard means transparency.', '处理后按 1:1 显示：一个图片像素对应一个 CSS 像素。大图可滚动查看，或切换为适应窗口。原图自适应窗口，棋盘格代表透明区域。'],
+    'preview.note': ['Result fits the window; this display scaling does not change the exported image. Labels show actual dimensions; checkerboard means transparency.', '处理后自适应窗口；显示缩放不会改变导出图片。标注为实际尺寸，棋盘格代表透明区域。'],
     'log.error': ['{error}', '{error}'],
     'log.fileError': ['{name}: {error}', '{name}：{error}'],
     'log.refreshed': ['Folder refreshed: {count} images. New arrivals are selected and shown first.', '素材目录已刷新：{count} 张图片。运行期间新增图片自动勾选并排在前面。'],
@@ -131,13 +145,13 @@
     'toast.browse': ['Choose a folder. The dialog may be behind your browser.', '请选择文件夹；目录选择窗口可能位于浏览器后方。'],
     'toast.output': ['Destination folder saved', '导出目录已保存'],
     'toast.busy': ['A task is running. Wait before adding more assets.', '当前任务进行中，请完成后再添加素材'],
+    'toast.defaults': ['Restored size and format defaults. Assets, names, and folders are preserved.', '已恢复尺寸和格式默认值，保留素材选择、命名和目录。'],
     'folder.reading': ['Reading the dropped folder…', '正在读取拖入的文件夹…'],
     'error.positive': ['Dimensions and scale must be greater than zero.', '尺寸和比例必须大于 0'],
     'error.integer': ['Pixel dimensions must be whole numbers.', '像素尺寸必须为整数'],
     'error.large': ['Image too large: max 16384 px per side and approximately 32 million pixels.', '尺寸过大：单边最多 16384 px，总面积最多 3200 万像素'],
     'error.upscale': ['This size requires upscaling. Enable “Allow upscaling” or use smaller dimensions.', '目标需要放大，请勾选「允许放大」或减小尺寸'],
     'error.mode': ['Unknown resize mode.', '未知缩放模式'],
-    'error.canvas': ['The browser could not create a canvas.', '浏览器无法创建画布'],
     'error.encode': ['Image encoding failed.', '图片编码失败'],
     'error.decode': ['Cannot decode the image. It may be damaged or unsupported.', '图片无法解码，可能已损坏或格式不支持'],
     'error.suffix': ['Filename suffix cannot contain paths or special characters.', '文件名后缀不能包含路径或特殊字符'],
@@ -162,7 +176,30 @@
     'error.method': ['Method not supported.', '方法不支持'],
     'error.file': ['File not found.', '文件不存在'],
     'error.request': ['Request failed ({status})', '请求失败 ({status})'],
-    'error.browserFormat': ['This browser does not support {format} export.', '当前浏览器不支持 {format} 导出']
+    'error.processingResponse': ['Invalid image processing response.', '图片处理返回数据无效，请重试'],
+    'error.pythonRequired': ['Python 3.10+ with Pillow is required. Set RESIZE_IMAGE_PYTHON to a compatible Python executable.', '需要安装 Pillow 的 Python 3.10 或以上环境。请将 RESIZE_IMAGE_PYTHON 设置为兼容的 Python 程序路径。'],
+    'error.processingTimeout': ['Python image processing timed out', 'Python 图片处理超时'],
+    'error.processedBytes': ['Processed image exceeds 80 MB', '处理后的图片超过 80 MB'],
+    'error.processingBusy': ['Too many image processing requests', '图片处理请求过多，请稍后重试'],
+    'error.processingCancelled': ['Image processing cancelled', '图片处理已取消'],
+    'error.inputEmpty': ['Image data is empty', '图片数据为空'],
+    'error.inputBytes': ['Image exceeds 80 MB', '输入图片超过 80 MB'],
+    'error.processingOptions': ['Invalid image processing options', '图片处理参数无效'],
+    'error.pythonResponse': ['Invalid Python image response', 'Python 图片处理返回数据无效'],
+    'error.outputExtension': ['Output filename does not match the image format', '输出文件扩展名与图片格式不一致'],
+    'error.pythonProcessing': ['Python image processing failed', 'Python 图片处理失败'],
+    'error.processingStartup': ['Image processing startup check failed', '图片处理启动自检失败，请查看 .runtime/server.error.log'],
+    'error.pythonVersion': ['Python 3.10 or later is required', '需要 Python 3.10 或以上版本'],
+    'error.pillow': ['Pillow is required for image processing', '图片处理需要安装 Pillow'],
+    'error.fit': ['Unknown resize fit', '未知尺寸适配方式'],
+    'error.inputPixels': ['Input image exceeds 100 million pixels', '输入图片超过 1 亿像素'],
+    'error.workerArguments': ['Invalid image worker arguments', '图片处理程序参数无效'],
+    'error.engineIncompatible': ['The image processing service is incompatible. Restart Resize Studio and reload this page.', '图片处理服务版本不兼容。请重启图片缩放工作台并刷新此页面。'],
+    'error.engineUnavailable': ['Cannot connect to the image processing service. Restart Resize Studio and reload this page.', '无法连接图片处理服务。请重启图片缩放工作台并刷新此页面。'],
+    'error.processingTemporary': ['Invalid processing temporary directory', '图片处理临时目录无效'],
+    'error.resizeSource': ['Bundled resize source failed verification', '内置缩放源代码校验失败'],
+    'error.imagePlan': ['Invalid image plan', '图片尺寸规划请求无效'],
+    'error.sourceDimensions': ['Invalid source image dimensions', '原图尺寸无效']
   };
   const key = 'resize-studio-language';
   let language = 'en';
@@ -173,13 +210,28 @@
     return text.replace(/\{(\w+)\}/g, (match, name) => String(params[name] ?? match));
   }
   const errorKeys = new Map(Object.entries(messages).filter(([id]) => id.startsWith('error.')).flatMap(([id, texts]) => texts.map(text => [text, id])));
+  // Python uses stable English errors; share the same messages as client validation.
+  for (const [message, id] of Object.entries({
+    'Dimensions and percentage must be positive finite numbers': 'error.positive',
+    'Pixel dimensions must be integers': 'error.integer',
+    'Output dimensions exceed the safety limit': 'error.large',
+    'Unknown resize mode': 'error.mode',
+    'Target requires upscaling; enable Allow upscaling or reduce dimensions': 'error.upscale',
+    'Invalid image options': 'error.processingOptions',
+    'Unsupported output format': 'error.format',
+    'Encoding quality must be between 1 and 100': 'error.quality',
+    'Input image exceeds 80 MB': 'error.inputBytes',
+    'Unsupported input image format': 'error.imageType',
+    'Cannot decode input image': 'error.decode',
+    'Cannot encode output image': 'error.encode',
+    'Output image exceeds 80 MB': 'error.processedBytes',
+    'Image processing failed': 'error.pythonProcessing'
+  })) errorKeys.set(message, id);
   function errorText(error) {
     const message = String(error?.message ?? error);
     if (errorKeys.has(message)) return t(errorKeys.get(message));
     const request = message.match(/^(?:请求失败|Request failed) \((\d+)\)$/);
     if (request) return t('error.request', { status: request[1] });
-    const format = message.match(/^当前浏览器不支持 (\w+) 导出$/);
-    if (format) return t('error.browserFormat', { format: format[1] });
     return message;
   }
   function applyStatic() {

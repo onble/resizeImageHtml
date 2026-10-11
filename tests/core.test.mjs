@@ -3,29 +3,24 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { geometry, outputName } from '../public/resize.mjs';
-import { safeRelative, saveImage, scanLibrary, createApp } from '../server.mjs';
+import { safeRelative, saveImage, scanLibrary, createApp, outputName } from '../server.mjs';
+import { planImages } from '../image-processor.mjs';
 import { compareAssets, reconcileLibrary } from '../public/library.mjs';
+import { fixture, fixtureOptions, decodeRgba, fixturePixels } from './image-fixtures.mjs';
 
-test('比例计算、Python .5 取整及固定画布的留白与裁切', () => {
-  assert.deepEqual([geometry(120, 600, { mode: 'height', height: 300 }).width, geometry(120, 600, { mode: 'height', height: 300 }).height], [60, 300]);
-  assert.equal(geometry(5, 10, { mode: 'height', height: 5 }).width, 2);
-  assert.equal(geometry(7, 10, { mode: 'height', height: 5 }).width, 4);
-  const contain = geometry(240, 120, { mode: 'exact', width: 108, height: 108, fit: 'contain' });
-  assert.deepEqual([contain.width, contain.height, contain.drawWidth, contain.drawHeight, contain.x, contain.y], [108, 108, 108, 54, 0, 27]);
-  const cover = geometry(240, 120, { mode: 'exact', width: 108, height: 108, fit: 'cover' });
-  assert.deepEqual([cover.drawWidth, cover.drawHeight, cover.x], [216, 108, -54]);
-  const percent = geometry(500, 100, { mode: 'percent', percent: 80 });
-  assert.deepEqual([percent.width, percent.height], [400, 80]);
-  const fit = geometry(240, 120, { mode: 'fit', width: 100, height: 100 });
-  assert.deepEqual([fit.width, fit.height], [100, 50]);
-  assert.equal(geometry(20, 10, { mode: 'fit', width: 100, height: 100 }).width, 20);
+const processingQuery = `options=${encodeURIComponent(JSON.stringify(fixtureOptions))}`;
+
+test('目标尺寸统一由Python计划计算，保留取整和逐张错误', async () => {
+  const rounded = await planImages([{ id: 'a', width: 5, height: 10 }, { id: 'b', width: 7, height: 10 }], { mode: 'height', height: 5 });
+  assert.deepEqual(rounded.items.map(item => item.layout), [{ width: 2, height: 5 }, { width: 4, height: 5 }]);
+  const fit = await planImages([{ id: 'large', width: 240, height: 120 }, { id: 'small', width: 20, height: 10 }], { mode: 'fit', width: 100, height: 100 });
+  assert.deepEqual(fit.items.map(item => item.layout), [{ width: 100, height: 50 }, { width: 20, height: 10 }]);
+  const mixed = await planImages([{ id: 'ok', width: 120, height: 600 }, { id: 'too-small', width: 100, height: 100 }], { mode: 'height', height: 300 });
+  assert.deepEqual(mixed.items[0].layout, { width: 60, height: 300 });
+  assert.match(mixed.items[1].error, /upscaling/);
 });
 
 test('异常参数被拒绝，格式转换和相对子目录保留', () => {
-  assert.throws(() => geometry(100, 100, { mode: 'height', height: 0 }), /大于/);
-  assert.throws(() => geometry(100, 100, { mode: 'height', height: 200 }), /放大/);
-  assert.throws(() => geometry(100, 100, { mode: 'exact', width: 20000, height: 20000, fit: 'stretch', allowUpscale: true }), /过大/);
   assert.equal(outputName('目录/图层 1.bmp', 'png', '_small'), '目录/图层 1_small.png');
   assert.equal(outputName('目录/图层 1.png', 'jpeg', '', false), '图层 1.jpg');
   for (const value of ['../escape.png', 'D:/escape.png', '/escape.png', 'nul.png', 'folder/../escape.png', 'folder\\..\\escape.png']) assert.throws(() => safeRelative(value));
@@ -65,23 +60,21 @@ test('真实目录扫描、输出冲突处理、源文件保护和本地接口�
   assert.match(languageScript.headers.get('content-type'), /text\/javascript/);
   assert.match(await languageScript.text(), /resize-studio-language/);
   const wasm = await fetch(`${base}/vendor/oxipng/squoosh_oxipng_bg.wasm`);
-  assert.equal(wasm.status, 200); assert.equal(wasm.headers.get('content-type'), 'application/wasm');
-  assert.deepEqual([...new Uint8Array(await wasm.arrayBuffer()).subarray(0, 4)], [0, 97, 115, 109]);
-  assert.match(wasm.headers.get('content-security-policy'), /'wasm-unsafe-eval'/);
-  assert.match(wasm.headers.get('content-security-policy'), /worker-src 'self'/);
-  assert.doesNotMatch(wasm.headers.get('content-security-policy'), /'unsafe-eval'/);
+  assert.equal(wasm.status, 404);
+  assert.doesNotMatch(languageScript.headers.get('content-security-policy'), /wasm-unsafe-eval|worker-src/);
   for (const route of ['png-optimizer.mjs', 'png-worker.mjs', 'vendor/oxipng/squoosh_oxipng.js']) {
-    const response = await fetch(`${base}/${route}`); assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /text\/javascript/);
+    const response = await fetch(`${base}/${route}`); assert.equal(response.status, 404);
   }
   assert.equal((await fetch(`${base}/vendor/oxipng/unknown.js`)).status, 404);
   const token = html.match(/name="resize-token" content="([^"]+)"/)[1];
   assert.equal((await fetch(`${base}/api/config`)).status, 403);
   assert.equal((await fetch(`${base}/api/config`, { headers: { 'X-Resize-Token': token, Origin: 'https://example.com' } })).status, 403);
-  const headers = { 'X-Resize-Token': token };
+  const headers = { 'X-Resize-Token': token, 'X-Resize-Protocol': '2' };
   assert.equal((await (await fetch(`${base}/api/library`, { headers })).json()).files.length, 1);
   assert.equal((await fetch(`${base}/api/image?path=..%2Fescape.png`, { headers })).status, 400);
-  const exported = await (await fetch(`${base}/api/export?name=api.png`, { method: 'POST', headers, body: Buffer.from('api-bytes') })).json();
+  const exported = await (await fetch(`${base}/api/export?name=api.png&${processingQuery}`, { method: 'POST', headers, body: fixture })).json();
   assert.equal(exported.path, path.join(output, 'api.png'));
+  assert.deepEqual(decodeRgba(await fs.readFile(exported.path)).rgba, fixturePixels);
   const changed = await fetch(`${base}/api/config`, { method: 'POST', headers, body: JSON.stringify({ input, output: path.join(root, 'target'), watch: false }) });
   assert.equal(changed.status, 200);
   assert.equal((await (await fetch(`${base}/api/config`, { headers })).json()).watch, false);
@@ -98,14 +91,14 @@ test('默认目录使用项目相对路径，自定义目录和配置持久化�
   const base = `http://127.0.0.1:${server.address().port}`;
   const html = await (await fetch(base)).text();
   const token = html.match(/name="resize-token" content="([^"]+)"/)[1];
-  const headers = { 'X-Resize-Token': token };
+  const headers = { 'X-Resize-Token': token, 'X-Resize-Protocol': '2' };
   const defaults = await (await fetch(`${base}/api/config`, { headers })).json();
   assert.equal(defaults.input, './input');
   assert.equal(defaults.output, './output');
   assert.equal(defaults.defaultOutput, './output');
   assert.equal((await (await fetch(`${base}/api/library`, { headers })).json()).files[0].name, 'sample.png');
   assert.equal(await (await fetch(`${base}/api/image?path=sample.png`, { headers })).text(), 'source');
-  const exported = await (await fetch(`${base}/api/export?name=sample.png`, { method: 'POST', headers, body: 'result' })).json();
+  const exported = await (await fetch(`${base}/api/export?name=sample.png&${processingQuery}`, { method: 'POST', headers, body: fixture })).json();
   assert.equal(exported.path, path.join(root, 'output', 'sample.png'));
   assert.equal(await fs.readFile(path.join(root, 'input', 'sample.png'), 'utf8'), 'source');
 
@@ -117,7 +110,7 @@ test('默认目录使用项目相对路径，自定义目录和配置持久化�
   assert.equal(stored.input, './custom-input');
   assert.equal(stored.output, './custom-output');
   assert.equal((await (await fetch(`${base}/api/library`, { headers })).json()).files[0].name, 'custom.png');
-  const customExport = await (await fetch(`${base}/api/export?name=custom.png`, { method: 'POST', headers, body: 'custom-result' })).json();
+  const customExport = await (await fetch(`${base}/api/export?name=custom.png&${processingQuery}`, { method: 'POST', headers, body: fixture })).json();
   assert.equal(customExport.path, path.join(root, 'custom-output', 'custom.png'));
   const reset = await (await fetch(`${base}/api/config`, { method: 'POST', headers, body: JSON.stringify({ input: './custom-input', output: '', watch: true }) })).json();
   assert.equal(reset.output, './output');
